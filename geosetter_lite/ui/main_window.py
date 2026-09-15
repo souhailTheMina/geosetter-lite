@@ -6,7 +6,7 @@ from typing import List, Optional
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTableWidget, QTableWidgetItem, QLabel, QScrollArea, QMenu,
-    QHeaderView, QMessageBox, QDialog, QPushButton, QApplication
+    QHeaderView, QMessageBox, QDialog, QPushButton, QApplication, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal, QEvent, QSize, QPoint, QTimer
 from PySide6.QtGui import QPixmap, QAction, QImage, QKeyEvent, QIcon, QPainter, QColor, QPen
@@ -284,6 +284,18 @@ class MainWindow(QMainWindow):
         rotate_action.triggered.connect(self._rotate_photos)
         file_menu.addAction(rotate_action)
         
+        file_menu.addSeparator()
+        
+        # Map overlays (KMZ/KML)
+        add_overlay_action = QAction("Add Map Overlay (KMZ/KML)...", self)
+        add_overlay_action.triggered.connect(self._add_map_overlay)
+        file_menu.addAction(add_overlay_action)
+        
+        self.clear_overlays_action = QAction("Clear Map Overlays", self)
+        self.clear_overlays_action.triggered.connect(self._clear_map_overlays)
+        file_menu.addAction(self.clear_overlays_action)
+        self._update_overlay_actions()
+        
         
         # AI Tools menu
         ai_menu = menubar.addMenu("AI Tools")
@@ -326,6 +338,7 @@ class MainWindow(QMainWindow):
         <p><b>Features:</b></p>
         <ul>
             <li>Interactive map with GPS coordinate management</li>
+            <li>KMZ/KML vector overlays</li>
             <li>Reverse geocoding using OpenStreetMap Nominatim</li>
             <li>Comprehensive metadata editing</li>
             <li>AI-powered geolocation prediction and similarity detection</li>
@@ -334,7 +347,7 @@ class MainWindow(QMainWindow):
             <li>Keywords auto-update with country information</li>
         </ul>
         <br>
-        <p><b>Built with:</b> PySide6, ExifTool, OpenStreetMap, Leaflet</p>
+        <p><b>Built with:</b> PySide6, ExifTool, Leaflet, Esri World Imagery, OpenStreetMap</p>
         <p><b>License:</b> Apache 2.0</p>
         """
         
@@ -2209,6 +2222,54 @@ class MainWindow(QMainWindow):
                 "Error",
                 f"Failed to predict locations:\n{str(e)}"
             )
+    
+    def _add_map_overlay(self):
+        """Pick one or more KMZ/KML files and draw them on the map"""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Map Overlay",
+            Config.get_app_settings().get('last_directory', str(Path.home())),
+            "Map overlays (*.kmz *.kml);;All files (*)"
+        )
+        
+        if not paths:
+            return
+        
+        existing = self.map_panel.map_widget.get_overlay_files()
+        combined = existing + [p for p in paths if p not in existing]
+        
+        self.statusBar().showMessage("Loading map overlay...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.map_panel.map_widget.set_overlay_files(combined)
+        finally:
+            QApplication.restoreOverrideCursor()
+        
+        errors = self.map_panel.map_widget.get_overlay_errors()
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Map Overlay",
+                "Some overlays could not be loaded:\n\n" + "\n".join(errors)
+            )
+        
+        loaded = len(combined) - len(errors)
+        self.statusBar().showMessage(f"Map overlays loaded: {loaded}")
+        self._update_overlay_actions()
+    
+    def _clear_map_overlays(self):
+        """Remove all KMZ/KML overlays from the map"""
+        if not self.map_panel.map_widget.get_overlay_files():
+            return
+        
+        self.map_panel.map_widget.set_overlay_files([])
+        self.statusBar().showMessage("Map overlays cleared")
+        self._update_overlay_actions()
+    
+    def _update_overlay_actions(self):
+        """Enable the clear action only when overlays are loaded"""
+        has_overlays = bool(self.map_panel.map_widget.get_overlay_files())
+        self.clear_overlays_action.setEnabled(has_overlays)
     
     def _show_ai_settings(self):
         """Show AI settings dialog"""

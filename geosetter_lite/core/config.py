@@ -19,6 +19,10 @@ class Config:
             'auto_rotate_images': False,
             'preserve_map_zoom': True,
             'default_map_zoom': 10,
+            'map_layer': 'Hybrid',
+            'map_overlays': [],
+            'map_overlays_hidden': [],
+            'map_overlay_clicks': False,
             'rename_pattern': '',
         }
     }

@@ -16,7 +16,8 @@ A comprehensive Python application for viewing and editing EXIF/IPTC/XMP metadat
 ### Core Features
 - **Image List View**: Display all JPEG, PNG, and HEIF/HEIC images from a directory with comprehensive metadata columns
 - **Image Viewer**: View selected images in a resizable panel with thumbnail support
-- **Interactive Map**: Display all images with GPS coordinates on an OpenStreetMap with visual distinction for selected images
+- **Interactive Map**: Display all images with GPS coordinates on a satellite, hybrid or street map with visual distinction for selected images
+- **Map Overlays**: Load KMZ/KML files to draw reference geometry (polygons, lines and points) beneath your photo markers
 - **Active Marker**: Click anywhere on the map to set an active marker for batch GPS updates
 - **GPS Coordinate Management**: Update multiple images with GPS coordinates from the active marker
 - **3-Pane Resizable Layout**: Image list (top-left), image viewer (bottom-left), and map with toolbar (right)
@@ -149,7 +150,7 @@ The application features a flexible 3-pane layout with resizable borders:
 
 - **Bottom-Left Panel**: Image viewer showing the first selected image
 
-- **Right Panel**: Interactive OpenStreetMap with toolbar displaying:
+- **Right Panel**: Interactive map with toolbar displaying:
   - **All Images**: Gray markers for all images with GPS coordinates
   - **Selected Images**: Blue markers for currently selected images
   - **Active Marker**: Red marker set by clicking on the map
@@ -161,7 +162,16 @@ The application features a flexible 3-pane layout with resizable borders:
     4. **Set Taken Date** (file → calendar): Initialize Taken Date from file creation date
     5. **Set GPS Date** (calendar → GPS): Initialize GPS Date from Taken Date (converted to UTC)
     6. **Repair Metadata** (medical cross): Fix/repair metadata using ExifTool
-  - Leaflet-based map with OpenStreetMap tiles
+  - Leaflet-based map with a layer switcher (top right) offering three views:
+    - **Satellite**: Esri World Imagery aerial photography
+    - **Hybrid**: the same imagery with place names and boundaries drawn on top (default)
+    - **Street**: OpenStreetMap tiles
+  - The selected view is remembered between sessions
+  - Any loaded KMZ/KML overlays appear in the same switcher and can be toggled individually
+  - Before any geotagged image is loaded the map opens on Riyadh, Saudi Arabia;
+    once images with GPS coordinates are present it fits to them instead
+    (change `DEFAULT_CENTER_LAT` / `DEFAULT_CENTER_LON` / `DEFAULT_CENTER_ZOOM`
+    in `geosetter_lite/ui/map_widget.py` to start somewhere else)
   - Scale control
   - Automatic zoom and centering based on markers
   - Smart bounds fitting for multiple markers
@@ -256,7 +266,34 @@ Keywords are automatically managed:
 - **jpegtran**: Must be installed for JPEG lossless rotation
 
 **External APIs:**
+- **Esri World Imagery**: Satellite tiles for the Satellite/Hybrid views (no API key required)
+- **OpenStreetMap**: Street map tiles (no API key required)
 - **OpenStreetMap Nominatim**: Free reverse geocoding service (no API key required)
+
+### Map Overlays (KMZ/KML)
+
+Reference geometry can be drawn on the map beneath the photo markers - site
+boundaries, networks, parcels and similar.
+
+- **File -> Add Map Overlay (KMZ/KML)...** loads one or more files
+- **File -> Clear Map Overlays** removes them all
+- Each file appears as a toggle in the map's layer switcher (top right), and both
+  the loaded files and their visibility are remembered between sessions
+- **Overlay clicks** (a checkbox in the same switcher) controls whether overlay
+  shapes respond to clicks:
+  - **Off (default)**: clicks pass straight through the shapes to the map, so the
+    active marker can be placed anywhere, including on top of a parcel
+  - **On**: clicking a shape opens a popup with its name, source folder/layer and
+    attributes, and the map does not receive the click
+  - The setting is remembered between sessions
+- Polygons, lines and points are each drawn in their native form, using the colours
+  and line widths defined by the source file's KML styles
+
+Source files are frequently far more detailed than a photo-location map needs, so
+geometry is simplified on load (Ramer-Douglas-Peucker, ~2 m tolerance) and drawn on
+an HTML canvas. For the sample datasets this removes about 95% of the vertices,
+keeping thousands of shapes responsive; adjust `SIMPLIFY_TOLERANCE` in
+`geosetter_lite/services/kmz_service.py` to trade detail against speed.
 
 ## Metadata Tags Reference
 
@@ -391,7 +428,8 @@ This project uses the following third-party libraries:
 - **torchvision** (BSD License): Computer vision models and utilities
 - **transformers** (Apache 2.0): Hugging Face transformers library
 - **Leaflet** (BSD 2-Clause): JavaScript library for interactive maps (loaded from CDN)
-- **OpenStreetMap** (ODbL): Map tiles and data
+- **OpenStreetMap** (ODbL): Street map tiles and data
+- **Esri World Imagery**: Satellite tiles, used as a web service under the Esri terms of use (attribution required)
 - **Nominatim** (GPL v2): Reverse geocoding service (used as web service, not linked)
 
 The use of PySide6 under LGPL v3 is compatible with Apache 2.0 licensing as long as PySide6 remains dynamically linked (installed as a separate package), which is the case in this project.
@@ -399,7 +437,8 @@ The use of PySide6 under LGPL v3 is compatible with Apache 2.0 licensing as long
 ## Acknowledgments
 
 - **ExifTool** by Phil Harvey - Comprehensive metadata reading/writing tool
-- **OpenStreetMap Contributors** - Map data and tiles
+- **OpenStreetMap Contributors** - Street map data and tiles
+- **Esri** - World Imagery satellite tiles
 - **Nominatim** - Reverse geocoding service
 - **Leaflet** - Interactive map library
 - **PyTorch** - Deep learning framework
