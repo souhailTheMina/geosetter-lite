@@ -1,15 +1,58 @@
 # GeoSetter Lite - Image Metadata Viewer and Editor
 
-[![License](https://img.shields.io/github/license/asaintsever/geosetter-lite?style=for-the-badge)](https://github.com/asaintsever/geosetter-lite/blob/main/LICENSE)
-[![GitHub All Releases](https://img.shields.io/github/downloads/asaintsever/geosetter-lite/total?style=for-the-badge)](https://github.com/asaintsever/geosetter-lite/releases)
-[![Latest release](https://img.shields.io/github/v/release/asaintsever/geosetter-lite?style=for-the-badge)](https://github.com/asaintsever/geosetter-lite/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=for-the-badge)](LICENSE)
+[![Fork of](https://img.shields.io/badge/fork%20of-asaintsever%2Fgeosetter--lite-blue?style=for-the-badge)](https://github.com/asaintsever/geosetter-lite)
 
 A comprehensive Python application for viewing and editing EXIF/IPTC/XMP metadata of images in a directory, with advanced geotagging capabilities and reverse geocoding.
+
+> [!IMPORTANT]
+> This is a **modified fork** of [asaintsever/geosetter-lite](https://github.com/asaintsever/geosetter-lite),
+> the original work of [@asaintsever](https://github.com/asaintsever), used under the Apache License 2.0.
+> It is not an official release of that project, and the original author has neither
+> reviewed nor endorsed it. Files in this repository have been changed - see
+> [Changes from upstream](#changes-from-upstream). The unmodified license text is in
+> [`LICENSE`](LICENSE) and covers both the original work and these modifications.
 
 > [!NOTE]
 > This application is a tribute to GeoSetter (<https://geosetter.de/en/main-en/>) and is not affiliated with or endorsed by the original GeoSetter project.
 >
 > This is a light clone, written in Python, focusing on core geotagging features with additional AI-powered functionalities. The triggering reason was the lack of a macOS version of GeoSetter along with the desire to experiment with AI models for photo processing.
+
+## Changes from upstream
+
+Everything below was added or changed in this fork, relative to
+[asaintsever/geosetter-lite](https://github.com/asaintsever/geosetter-lite) v1.0.1.
+
+**Map overlays (KMZ/KML)** - new `geosetter_lite/services/kmz_service.py`.
+Load KMZ/KML files to draw reference geometry beneath the photo markers, each file
+toggleable in the layer switcher, with opt-in click handling so shapes do not
+swallow map clicks. Geometry is simplified on load (Ramer-Douglas-Peucker, ~2 m)
+and canvas-rendered to stay responsive on large datasets. See
+[Map Overlays](#map-overlays-kmzkml).
+
+**Satellite and hybrid basemaps** - the single OpenStreetMap view was replaced by a
+layer switcher offering Esri World Imagery satellite, hybrid (imagery plus labels,
+the new default) and OSM street views, remembered between sessions.
+
+**Configurable start location** - the map opens at `DEFAULT_CENTER_LAT` /
+`DEFAULT_CENTER_LON` / `DEFAULT_CENTER_ZOOM` in `geosetter_lite/ui/map_widget.py`
+(Riyadh, Saudi Arabia) until geotagged photos are loaded.
+
+**Parcel folders** - opening a folder named for a parcel in a loaded overlay moves
+the map to that parcel. See [Parcel Folders](#parcel-folders).
+
+**GPS updates apply immediately** - "Update GPS" no longer asks for confirmation and
+no longer reports success in a modal dialog; the result goes to the status bar
+instead. The confirmation can be restored in Settings. See
+[GPS Update Confirmation](#gps-update-confirmation).
+
+**Map no longer rebuilds when markers change** - photo markers and the active marker
+are now injected into the live map document instead of being embedded in it. This
+fixes two problems: writing GPS coordinates rebuilt the whole page, which dropped
+tiles, overlays and popup state; and because each marker popup embeds a base64
+thumbnail, a few hundred photos pushed the document past the 2 MB `setHtml()` limit,
+at which point Qt silently discarded the entire page and the map failed to render.
+Thumbnails are also cached by path, mtime and size.
 
 ## Features
 
@@ -19,7 +62,8 @@ A comprehensive Python application for viewing and editing EXIF/IPTC/XMP metadat
 - **Interactive Map**: Display all images with GPS coordinates on a satellite, hybrid or street map with visual distinction for selected images
 - **Map Overlays**: Load KMZ/KML files to draw reference geometry (polygons, lines and points) beneath your photo markers
 - **Active Marker**: Click anywhere on the map to set an active marker for batch GPS updates
-- **GPS Coordinate Management**: Update multiple images with GPS coordinates from the active marker
+- **GPS Coordinate Management**: Update multiple images with GPS coordinates from the active marker, applied immediately without a confirmation prompt
+- **Parcel Folders**: Opening a folder named for a parcel in a loaded overlay centres the map on that parcel
 - **3-Pane Resizable Layout**: Image list (top-left), image viewer (bottom-left), and map with toolbar (right)
 - **Metadata Editor**: Edit EXIF/IPTC/XMP metadata for single or multiple images with namespace display
 - **Batch Operations**: Apply metadata changes to multiple images at once
@@ -295,6 +339,47 @@ an HTML canvas. For the sample datasets this removes about 95% of the vertices,
 keeping thousands of shapes responsive; adjust `SIMPLIFY_TOLERANCE` in
 `geosetter_lite/services/kmz_service.py` to trade detail against speed.
 
+### Parcel Folders
+
+Photo folders are commonly named for the parcel they document. When a folder is
+opened, its name is matched against the features of the loaded overlays, and on a
+match the map moves to that parcel - useful precisely when the photos have no
+coordinates yet and there is nothing else for the map to fit to.
+
+- Placemark names are checked first, then the attribute values parsed out of each
+  placemark's description table, since exports differ in where they put the id
+- Matching ignores case and surrounding whitespace, and tries the whole folder name
+  before its individual words, so the most specific match wins:
+
+  | Folder name | Result |
+  | --- | --- |
+  | `ANH-139-HF-100004` | matches that parcel |
+  | `anh-139-hf-100004` | matches - case is ignored |
+  | `ANH-139-HF-100004 - site photos` | matches - extra words are ignored |
+  | `Site_ANH-139-HF-100005` | matches - the id is found as a word |
+  | `Holiday photos` | no match, map behaves as before |
+
+- A word only counts as a candidate id if it is at least 4 characters **and**
+  contains a digit, so a folder called `Site photos` will not latch onto a parcel
+  named `SITE`
+- A matched parcel takes precedence over fitting the map to the photos, and the
+  status bar reports it: `Loaded 47 images - map centred on parcel ANH-139-HF-100004`
+- Parcels that are a single point rather than an area are framed at zoom
+  `PARCEL_POINT_ZOOM` in `geosetter_lite/ui/map_widget.py`
+
+This only considers overlays already loaded through **File -> Add Map Overlay**; it
+does not search the folder for KMZ files.
+
+### GPS Update Confirmation
+
+**Update GPS** writes the active marker's coordinates to the selected photos
+straight away, and reports the result in the status bar rather than a dialog.
+
+To be asked to confirm first, enable **Ask for confirmation before updating GPS
+coordinates** under Settings -> Map. Since coordinates are written without a prompt,
+keep **Create backup files (`_original`)** enabled under Settings -> ExifTool if you
+want an undo path.
+
 ## Metadata Tags Reference
 
 The application writes to multiple metadata standards for maximum compatibility:
@@ -416,6 +501,13 @@ Run directly: Double-click `dist/GeoSetter Lite.app`
 
 This project is licensed under the Apache License 2.0.
 
+It is a derivative work of
+[asaintsever/geosetter-lite](https://github.com/asaintsever/geosetter-lite), copyright
+the original author and contributors, distributed under that same license. The full
+license text is unmodified in [`LICENSE`](LICENSE) and applies to both the original
+work and the modifications made here, which are listed in
+[Changes from upstream](#changes-from-upstream).
+
 ### Third-Party Licenses
 
 This project uses the following third-party libraries:
@@ -427,7 +519,7 @@ This project uses the following third-party libraries:
 - **PyTorch** (BSD-style License): Deep learning framework
 - **torchvision** (BSD License): Computer vision models and utilities
 - **transformers** (Apache 2.0): Hugging Face transformers library
-- **Leaflet** (BSD 2-Clause): JavaScript library for interactive maps (loaded from CDN)
+- **Leaflet** (BSD 2-Clause): JavaScript library for interactive maps (v1.9.4, bundled in `geosetter_lite/resources/leaflet/` and served through Qt resources)
 - **OpenStreetMap** (ODbL): Street map tiles and data
 - **Esri World Imagery**: Satellite tiles, used as a web service under the Esri terms of use (attribution required)
 - **Nominatim** (GPL v2): Reverse geocoding service (used as web service, not linked)
