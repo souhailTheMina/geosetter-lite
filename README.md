@@ -444,3 +444,4 @@ The use of PySide6 under LGPL v3 is compatible with Apache 2.0 licensing as long
 - **PyTorch** - Deep learning framework
 - **Hugging Face** - Pre-trained models (ResNet, CLIP)
 - **OpenAI** - CLIP model architecture
+# GeoSetterLiteGr
