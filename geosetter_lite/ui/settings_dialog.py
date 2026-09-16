@@ -184,7 +184,22 @@ class SettingsDialog(QDialog):
         
         # Initialize zoom slider state based on preserve checkbox
         self._on_preserve_zoom_changed()
-        
+
+        # Confirmation before writing GPS coordinates
+        self.confirm_gps_checkbox = QCheckBox("Ask for confirmation before updating GPS coordinates")
+        self.confirm_gps_checkbox.setChecked(self.app_settings.get('confirm_gps_update', False))
+        map_layout.addRow(self.confirm_gps_checkbox)
+
+        confirm_gps_help_label = QLabel(
+            "When disabled, clicking 'Update GPS' writes the active marker's coordinates\n"
+            "to the selected photos immediately, reporting the result in the status bar.\n"
+            "Note: this writes EXIF/XMP metadata straight away, so keep ExifTool backups\n"
+            "enabled above if you want an undo path."
+        )
+        confirm_gps_help_label.setWordWrap(True)
+        confirm_gps_help_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+        map_layout.addRow(confirm_gps_help_label)
+
         map_group.setLayout(map_layout)
         layout.addWidget(map_group)
         
@@ -255,6 +270,7 @@ class SettingsDialog(QDialog):
             self.autorotate_checkbox.setChecked(app_defaults.get('auto_rotate_images', False))
             self.preserve_zoom_checkbox.setChecked(app_defaults.get('preserve_map_zoom', True))
             self.zoom_slider.setValue(app_defaults.get('default_map_zoom', 10))
+            self.confirm_gps_checkbox.setChecked(app_defaults.get('confirm_gps_update', False))
             self._on_preserve_zoom_changed()
     
     def get_settings(self):
@@ -267,7 +283,8 @@ class SettingsDialog(QDialog):
             'exiftool_create_backups': self.backup_checkbox.isChecked(),
             'auto_rotate_images': self.autorotate_checkbox.isChecked(),
             'preserve_map_zoom': self.preserve_zoom_checkbox.isChecked(),
-            'default_map_zoom': self.zoom_slider.value()
+            'default_map_zoom': self.zoom_slider.value(),
+            'confirm_gps_update': self.confirm_gps_checkbox.isChecked()
         }
         return {'ai_settings': ai_settings, 'app_settings': app_settings}
     
@@ -308,6 +325,7 @@ class SettingsDialog(QDialog):
         app_settings['auto_rotate_images'] = settings['app_settings']['auto_rotate_images']
         app_settings['preserve_map_zoom'] = settings['app_settings']['preserve_map_zoom']
         app_settings['default_map_zoom'] = settings['app_settings']['default_map_zoom']
+        app_settings['confirm_gps_update'] = settings['app_settings']['confirm_gps_update']
         Config.set_app_settings(app_settings)
         
         super().accept()

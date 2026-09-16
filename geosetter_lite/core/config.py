@@ -23,6 +23,7 @@ class Config:
             'map_overlays': [],
             'map_overlays_hidden': [],
             'map_overlay_clicks': False,
+            'confirm_gps_update': False,
             'rename_pattern': '',
         }
     }

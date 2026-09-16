@@ -447,8 +447,28 @@ class MainWindow(QMainWindow):
         
         # Update map with all images that have GPS coordinates
         self.update_all_images_on_map()
-        
-        self.statusBar().showMessage(f"Loaded {len(self.images)} images")
+
+        # Runs last: if the folder names a parcel in a loaded overlay, the map
+        # goes there instead of fitting to the photos
+        matched_parcel = self.focus_map_on_directory_parcel()
+
+        if matched_parcel:
+            self.statusBar().showMessage(
+                f"Loaded {len(self.images)} images - map centred on parcel {matched_parcel}")
+        else:
+            self.statusBar().showMessage(f"Loaded {len(self.images)} images")
+
+    def focus_map_on_directory_parcel(self) -> Optional[str]:
+        """
+        Centre the map on the parcel the current folder is named for, if any.
+
+        Returns:
+            The matched parcel id, or None when the folder name matches nothing
+        """
+        if not self.directory:
+            return None
+
+        return self.map_panel.map_widget.focus_on_identifier(self.directory.name)
     
     def on_directory_changed(self, new_directory: Path):
         """
@@ -1382,20 +1402,21 @@ class MainWindow(QMainWindow):
         if not selected_images:
             return
         
-        # Confirm action
+        # Confirm action (opt-in via Settings; disabled by default so the update applies directly)
         lat, lon = active_marker
-        result = QMessageBox.question(
-            self,
-            "Update GPS Coordinates",
-            f"Update GPS coordinates for {len(selected_images)} image(s) to:\n"
-            f"Latitude: {lat:.6f}°\n"
-            f"Longitude: {lon:.6f}°\n\n"
-            f"This will modify the EXIF/XMP metadata of the selected images.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if result != QMessageBox.StandardButton.Yes:
-            return
+        if Config.get_app_settings().get('confirm_gps_update', False):
+            result = QMessageBox.question(
+                self,
+                "Update GPS Coordinates",
+                f"Update GPS coordinates for {len(selected_images)} image(s) to:\n"
+                f"Latitude: {lat:.6f}°\n"
+                f"Longitude: {lon:.6f}°\n\n"
+                f"This will modify the EXIF/XMP metadata of the selected images.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            if result != QMessageBox.StandardButton.Yes:
+                return
         
         # Prepare GPS metadata with absolute values and explicit Ref tags
         metadata = {
@@ -1491,12 +1512,13 @@ class MainWindow(QMainWindow):
                 filepaths = [img.filepath for img in selected_images]
                 self.exiftool_service.write_metadata(filepaths, metadata)
             
-            QMessageBox.information(
-                self,
-                "Success",
-                f"GPS coordinates updated for {len(selected_images)} image(s)."
+            # Report in the status bar rather than a modal box, so batches of
+            # marker updates don't need a click each time
+            self.statusBar().showMessage(
+                f"GPS coordinates updated for {len(selected_images)} image(s): "
+                f"{lat:.6f}°, {lon:.6f}°"
             )
-            
+
             # Reload images
             self.reload_images()
             

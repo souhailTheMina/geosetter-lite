@@ -59,6 +59,14 @@ OSM_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">'
 
 MAX_TILE_ZOOM = 19
 
+# Markers are injected in batches rather than one statement per photo, which keeps
+# the number of round trips to the page down on large directories.
+MARKER_BATCH_SIZE = 50
+
+# Zoom used when a folder matches a parcel that is a single point rather than an
+# area, since a point has no extent to fit to
+PARCEL_POINT_ZOOM = 18
+
 # Pseudo-overlay in the layer switcher that turns overlay click handling on and
 # off. Off by default, so clicks fall through to the map and place the active
 # marker even where overlay shapes cover it.
@@ -155,6 +163,19 @@ class MapWidget(QWidget):
         # the serialised form is reused every time the map document is rebuilt.
         self._overlay_cache: Optional[List[str]] = None
         self._overlay_errors: List[str] = []
+        # Parsed form of the same overlays, kept so a parcel can be looked up by
+        # id without re-reading the files
+        self._parsed_overlays: List[dict] = []
+
+        # Markers are injected once the document is ready, so track that state and
+        # hold the viewport JS that used to run at the end of the page script.
+        self._map_loaded: bool = False
+        self._pending_fit_bounds_js: str = ""
+
+        # Decoding a JPEG per marker is the expensive part of building the marker
+        # JS, and the same photos are rebuilt on every refresh. Keyed on path plus
+        # mtime and size so an edited file is re-read.
+        self._thumbnail_cache: dict = {}
         self.auto_fit_bounds: bool = True  # Auto-fit on initial load
         self.has_had_markers: bool = False  # Track if markers have been set before
         
@@ -238,6 +259,7 @@ class MapWidget(QWidget):
         Config.set_app_settings(app_settings)
         
         self._overlay_cache = None  # Force a re-parse on the next draw
+        self._parsed_overlays = []
         self.reload_map()
     
     def get_overlay_files(self) -> List[str]:
@@ -255,12 +277,154 @@ class MapWidget(QWidget):
         self._do_load_map()
     
     def _on_map_load_finished(self, ok: bool):
-        """Draw the KMZ/KML overlays onto a freshly loaded map document"""
+        """Populate a freshly loaded map document: markers, then overlays"""
         if not ok:
             return
-        
+
+        self._map_loaded = True
+        page = self.web_view.page()
+
+        for statement in self._build_image_markers_js():
+            page.runJavaScript(statement)
+
+        # Recreated here rather than embedded, so it survives a document rebuild
+        if self.active_marker:
+            lat, lon = self.active_marker
+            self._update_active_marker_js(lat, lon)
+
         for statement in self._build_overlay_js():
-            self.web_view.page().runJavaScript(statement)
+            page.runJavaScript(statement)
+
+        # Runs last: fitting to markers is only meaningful once they exist
+        if self._pending_fit_bounds_js:
+            page.runJavaScript(self._pending_fit_bounds_js)
+            self._pending_fit_bounds_js = ""
+
+    def _build_image_markers_js(self) -> List[str]:
+        """
+        Build the JavaScript that creates the photo markers, in batches.
+
+        Returns:
+            A list of self-contained JavaScript statements to run in order
+        """
+        statements: List[str] = []
+        batch: List[str] = []
+
+        for marker_id, (lat, lon, name, is_selected, filepath) in self.markers.items():
+            popup_html = self._generate_popup_html(name, filepath)
+            icon_var = 'window.blueIcon' if is_selected else 'window.greyIcon'
+            batch.append(
+                f"window.imageMarkers[{json.dumps(marker_id)}] = "
+                f"L.marker([{lat}, {lon}], {{icon: {icon_var}}})"
+                f".addTo(window.map).bindPopup({json.dumps(popup_html)});"
+            )
+
+            if len(batch) >= MARKER_BATCH_SIZE:
+                statements.append(self._wrap_marker_batch(batch))
+                batch = []
+
+        if batch:
+            statements.append(self._wrap_marker_batch(batch))
+
+        return statements
+
+    @staticmethod
+    def _wrap_marker_batch(batch: List[str]) -> str:
+        """Wrap a batch of marker statements so it can run on its own"""
+        body = "\n".join(batch)
+        return f"""
+        (function() {{
+            if (typeof L === 'undefined' || !window.map) return;
+            window.imageMarkers = window.imageMarkers || {{}};
+            {body}
+        }})();
+        """
+
+    def focus_on_identifier(self, identifier: str) -> Optional[str]:
+        """
+        Move the map to the overlay feature a folder name refers to.
+
+        Photo folders are commonly named for the parcel they document, so opening
+        one can put the map straight on that parcel - useful precisely when the
+        photos have no coordinates yet and there is nothing else to fit to.
+
+        Args:
+            identifier: Folder name to look up, e.g. "ANH-139-HF-100004"
+
+        Returns:
+            The matched identifier, or None if no overlay feature matched
+        """
+        # Parses the overlay files on first use; cached afterwards
+        self._build_overlay_js()
+
+        match = kmz_service.find_feature_by_identifier(self._parsed_overlays, identifier)
+        if not match:
+            return None
+
+        _overlay, feature, matched = match
+        bounds = kmz_service.feature_bounds(feature)
+        if not bounds:
+            return None
+
+        min_lat, min_lon, max_lat, max_lon = bounds
+
+        # A single point has no extent, and fitBounds on an empty box zooms to
+        # the maximum. Frame it at a usable scale instead.
+        if max_lat - min_lat < 1e-9 and max_lon - min_lon < 1e-9:
+            view_js = (f"window.map.setView([{min_lat}, {min_lon}], "
+                       f"{PARCEL_POINT_ZOOM});")
+        else:
+            view_js = (f"window.map.fitBounds("
+                       f"[[{min_lat}, {min_lon}], [{max_lat}, {max_lon}]], "
+                       f"{{padding: [40, 40]}});")
+
+        js = f"""
+        (function() {{
+            if (!window.map) return;
+            {view_js}
+        }})();
+        """
+
+        # Hold the view here: without this the next marker update would fit to
+        # the photos and undo the jump to the parcel
+        self.auto_fit_bounds = False
+        self.last_center_lat = (min_lat + max_lat) / 2
+        self.last_center_lon = (min_lon + max_lon) / 2
+
+        if self._map_loaded:
+            self.web_view.page().runJavaScript(js)
+        else:
+            self._pending_fit_bounds_js = js
+
+        return matched
+
+    def _refresh_markers_in_place(self):
+        """
+        Replace the photo markers on the live map without rebuilding the document.
+
+        Reloading the page drops the tiles, the overlays and the popup state, which
+        reads as the map restarting - visible on every GPS write, since adding
+        coordinates to a photo changes the marker set.
+        """
+        page = self.web_view.page()
+        page.runJavaScript("""
+        (function() {
+            if (!window.map || !window.imageMarkers) return;
+            Object.keys(window.imageMarkers).forEach(function(id) {
+                window.map.removeLayer(window.imageMarkers[id]);
+            });
+            window.imageMarkers = {};
+        })();
+        """)
+
+        for statement in self._build_image_markers_js():
+            page.runJavaScript(statement)
+
+        # Only re-fit when nothing is selected. After a GPS write the user is
+        # looking at the spot they just clicked, so moving the viewport there
+        # would be the jump this method exists to avoid.
+        if self.auto_fit_bounds:
+            page.runJavaScript(self._generate_fit_bounds_js())
     
     def _build_overlay_js(self) -> List[str]:
         """
@@ -272,6 +436,7 @@ class MapWidget(QWidget):
             return self._overlay_cache
         
         self._overlay_errors = []
+        self._parsed_overlays = []
         paths = self.get_overlay_files()
         if not paths:
             self._overlay_cache = []
@@ -293,6 +458,7 @@ class MapWidget(QWidget):
                 self._overlay_errors.append(f"{Path(path).name}: no drawable features")
                 continue
             
+            self._parsed_overlays.append(overlay)
             payload = kmz_service.overlay_to_json(overlay)
             # Stop any "</script>" inside feature text from ending the script
             payload = payload.replace("</", "<\\/")
@@ -335,6 +501,7 @@ class MapWidget(QWidget):
     def _do_load_map(self):
         """Actually load the map HTML"""
         self.pending_reload = False
+        self._map_loaded = False
         html = self._generate_map_html()
         self.web_view.setHtml(html)
     
@@ -345,10 +512,11 @@ class MapWidget(QWidget):
         Returns:
             HTML string with embedded Leaflet map
         """
-        # Define icon creation JavaScript (done once)
+        # Define icon creation JavaScript (done once).
+        # Held on window so the marker JS injected after load can reach them.
         icon_definitions = f"""
             // Create custom icons
-            var blueIcon = L.icon({{
+            var blueIcon = window.blueIcon = L.icon({{
                 iconUrl: '{LEAFLET_MARKER_ICON_URL}',
                 iconRetinaUrl: '{LEAFLET_MARKER_ICON_RETINA_URL}',
                 shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
@@ -359,7 +527,7 @@ class MapWidget(QWidget):
                 className: 'blue-marker'
             }});
             
-            var greyIcon = L.icon({{
+            var greyIcon = window.greyIcon = L.icon({{
                 iconUrl: '{LEAFLET_MARKER_ICON_URL}',
                 iconRetinaUrl: '{LEAFLET_MARKER_ICON_RETINA_URL}',
                 shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
@@ -371,52 +539,16 @@ class MapWidget(QWidget):
             }});
         """
         
-        # Generate markers JavaScript
+        # Only the icon definitions are embedded. The markers themselves (and the
+        # active marker) are injected after load by _on_map_load_finished, for the
+        # same reason as the overlays: each popup carries a base64 thumbnail, so a
+        # few hundred photos push the document past the 2 MB setHtml() limit and
+        # the whole page - Leaflet include and all - is silently dropped.
         markers_js = icon_definitions
         markers_js += """
             // Store markers in a global object for later reference
             window.imageMarkers = window.imageMarkers || {};
         """
-        
-        # Add regular image markers
-        if self.markers:
-            for marker_id, (lat, lon, name, is_selected, filepath) in self.markers.items():
-                # Generate popup content with thumbnail
-                popup_html = self._generate_popup_html(name, filepath)
-                escaped_popup = json.dumps(popup_html)
-                
-                # Use different icons for selected vs unselected
-                icon_var = 'blueIcon' if is_selected else 'greyIcon'
-                escaped_id = json.dumps(marker_id)
-                markers_js += f"""
-                window.imageMarkers[{escaped_id}] = L.marker([{lat}, {lon}], {{icon: {icon_var}}}).addTo(map).bindPopup({escaped_popup});
-                """
-        
-        # Add active marker if set
-        if self.active_marker:
-            lat, lon = self.active_marker
-            markers_js += f"""
-            var redIcon = L.icon({{
-                iconUrl: '{LEAFLET_MARKER_ICON_RED_URL}',
-                shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
-                iconSize: [25, 41],
-                iconAnchor: [12, 41],
-                popupAnchor: [1, -34],
-                shadowSize: [41, 41]
-            }});
-            var activeMarker = L.marker([{lat}, {lon}], {{icon: redIcon, draggable: true}}).addTo(map).bindPopup('Active Marker');
-            
-            // Handle marker drag end event
-            activeMarker.on('dragend', function(e) {{
-                var latlng = e.target.getLatLng();
-                if (clickHandler) {{
-                    clickHandler.onMapClick(latlng.lat, latlng.lng);
-                }}
-            }});
-            
-            // Store in window for later reference
-            window.activeMarker = activeMarker;
-            """
         
         # Calculate center and zoom
         all_coords = []
@@ -495,6 +627,9 @@ class MapWidget(QWidget):
         else:
             # No fit bounds - preserves viewport (e.g., when selecting photos without geolocation)
             fit_bounds_js = ""
+        
+        # Deferred: the markers it fits to do not exist until after load
+        self._pending_fit_bounds_js = fit_bounds_js
         
         # Tile source values referenced by the map template below
         esri_imagery_url = ESRI_IMAGERY_URL
@@ -797,11 +932,9 @@ class MapWidget(QWidget):
                     }}
                 }});
                 
-                // Add markers
+                // Icon definitions; the markers themselves are injected after
+                // load, along with the overlays and any fit-bounds call
                 {markers_js}
-                
-                // Fit bounds if multiple markers (only on initial load or no selection)
-                {fit_bounds_js}
             </script>
         </body>
         </html>
@@ -813,8 +946,10 @@ class MapWidget(QWidget):
         """Update active marker via JavaScript without reloading map"""
         js = f"""
         (function() {{
-            if (!window.map) return;
-            
+            // Leaflet is checked too: this runs against whatever document is
+            // current, which may not have come up
+            if (typeof L === 'undefined' || !window.map) return;
+
             // Remove existing active marker if any
             if (window.activeMarker) {{
                 window.map.removeLayer(window.activeMarker);
@@ -895,9 +1030,14 @@ class MapWidget(QWidget):
             min_lat, max_lat = min(lats), max(lats)
             min_lon, max_lon = min(lons), max(lons)
             
+            # Guarded because this is injected after load, not embedded, and so
+            # can reach a document that failed to come up
             return f"""
-                var bounds = [[{min_lat}, {min_lon}], [{max_lat}, {max_lon}]];
-                map.fitBounds(bounds, {{padding: [50, 50]}});
+                (function() {{
+                    if (!window.map) return;
+                    var bounds = [[{min_lat}, {min_lon}], [{max_lat}, {max_lon}]];
+                    window.map.fitBounds(bounds, {{padding: [50, 50]}});
+                }})();
             """
         return ""
     
@@ -919,7 +1059,12 @@ class MapWidget(QWidget):
             path = Path(filepath)
             if not path.exists():
                 return None
-            
+
+            stat = path.stat()
+            cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+            if cache_key in self._thumbnail_cache:
+                return self._thumbnail_cache[cache_key]
+
             # Open and resize image
             with Image.open(path) as img:
                 # Convert to RGB if necessary (for PNG with transparency, etc.)
@@ -942,7 +1087,9 @@ class MapWidget(QWidget):
                 
                 # Encode to base64
                 img_data = base64.b64encode(buffer.read()).decode('utf-8')
-                return f"data:image/jpeg;base64,{img_data}"
+                thumbnail = f"data:image/jpeg;base64,{img_data}"
+                self._thumbnail_cache[cache_key] = thumbnail
+                return thumbnail
         
         except Exception as e:
             print(f"Error generating thumbnail for {filepath}: {e}")
@@ -1017,6 +1164,13 @@ class MapWidget(QWidget):
             self._update_marker_icons()
             return
         
+        # The marker set changed. On a live document that only needs the markers
+        # swapped out; rebuilding the page would drop tiles and overlays and read
+        # as the map restarting.
+        if self._map_loaded:
+            self._refresh_markers_in_place()
+            return
+
         # Reload map based on selection type
         if has_geolocated_selection:
             # Selected photos have geolocation - fit to them (skip viewport capture)
@@ -1039,7 +1193,7 @@ class MapWidget(QWidget):
         for marker_id, (lat, lon, name, is_selected, filepath) in self.markers.items():
             escaped_id = json.dumps(marker_id)
             # Determine which icon to use
-            icon_class = 'blueIcon' if is_selected else 'greyIcon'
+            icon_class = 'window.blueIcon' if is_selected else 'window.greyIcon'
             js_updates.append(f"""
                 if (window.imageMarkers && window.imageMarkers[{escaped_id}]) {{
                     var marker = window.imageMarkers[{escaped_id}];

@@ -348,3 +348,77 @@ def overlay_bounds(overlay: dict) -> Optional[Tuple[float, float, float, float]]
 def overlay_to_json(overlay: dict) -> str:
     """Serialise an overlay for embedding in the map document"""
     return json.dumps(overlay, ensure_ascii=False, separators=(',', ':'))
+
+
+# A folder is often named for the parcel it documents, sometimes with extra
+# words around the id ("ANH-139-HF-100004 - site photos"). Candidates are the
+# whole name first, then its individual tokens, so the most specific match wins.
+_TOKEN_SPLIT_RE = re.compile(r'[\s_]+')
+
+
+def _normalise_identifier(text: Optional[str]) -> str:
+    """Casefold and strip an identifier so lookups ignore spacing and case"""
+    return (text or '').strip().upper()
+
+
+def identifier_candidates(folder_name: str) -> List[str]:
+    """
+    Parcel id candidates to try for a folder name, most specific first.
+
+    Args:
+        folder_name: Directory name, e.g. "ANH-139-HF-100004 - site photos"
+
+    Returns:
+        Normalised candidate strings, without duplicates
+    """
+    whole = _normalise_identifier(folder_name)
+    if not whole:
+        return []
+
+    candidates = [whole]
+    for token in _TOKEN_SPLIT_RE.split(whole):
+        token = token.strip('-.,;:()[]')
+        # A bare word like "SITE" would match far too eagerly; parcel ids carry
+        # at least one digit and are long enough to be distinctive
+        if len(token) >= 4 and any(ch.isdigit() for ch in token):
+            candidates.append(token)
+
+    seen = set()
+    return [c for c in candidates if not (c in seen or seen.add(c))]
+
+
+def feature_bounds(feature: dict) -> Optional[Tuple[float, float, float, float]]:
+    """Return (min_lat, min_lon, max_lat, max_lon) covering a single feature"""
+    return overlay_bounds({'features': [feature]})
+
+
+def find_feature_by_identifier(overlays: List[dict],
+                               folder_name: str) -> Optional[Tuple[dict, dict, str]]:
+    """
+    Find the overlay feature a folder name refers to.
+
+    Each candidate is tried against every overlay before moving on to the next,
+    so an exact match on the full folder name beats a token match elsewhere.
+    Placemark names are checked first, then the attribute values parsed out of
+    the description table, since exports vary in where they put the parcel id.
+
+    Args:
+        overlays: Parsed overlays, as returned by load_overlay
+        folder_name: Directory name to match
+
+    Returns:
+        (overlay, feature, matched_identifier), or None if nothing matched
+    """
+    for candidate in identifier_candidates(folder_name):
+        for overlay in overlays:
+            for feature in overlay.get('features', []):
+                if _normalise_identifier(feature.get('n')) == candidate:
+                    return overlay, feature, candidate
+
+        for overlay in overlays:
+            for feature in overlay.get('features', []):
+                for _key, value in feature.get('a', []):
+                    if _normalise_identifier(value) == candidate:
+                        return overlay, feature, candidate
+
+    return None
