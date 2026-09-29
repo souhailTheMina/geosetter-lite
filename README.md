@@ -279,6 +279,7 @@ All three panes can be resized by dragging the borders between them.
 - **Right Click**: Open context menu with:
   - "Edit Metadata" - Opens full metadata editor dialog (works for single or multiple selections)
   - "Quick Edit (Basic Fields)" - Opens simplified batch editor for common fields (only appears when 2+ images selected)
+  - "Remove GPS Coordinates" - After a confirmation, deletes all GPS data (coordinates, altitude, GPS date/time) from the EXIF and XMP metadata of the selected images; other metadata such as City and Country is kept
 - **Double-Click Cell**:
   - Filename cell: Opens Edit Metadata dialog
   - other cells: Edit metadata directly in the table (country uses dropdown picker, dates use date picker)

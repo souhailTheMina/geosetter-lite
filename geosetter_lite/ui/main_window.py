@@ -982,7 +982,13 @@ class MainWindow(QMainWindow):
         date_time_shift_action = QAction("Date/Time Shift...", self)
         date_time_shift_action.triggered.connect(self._date_time_shift)
         menu.addAction(date_time_shift_action)
-        
+
+        menu.addSeparator()
+
+        remove_gps_action = QAction("Remove GPS Coordinates", self)
+        remove_gps_action.triggered.connect(self.remove_selected_images_gps)
+        menu.addAction(remove_gps_action)
+
         # Show menu at cursor position
         menu.exec(self.table.viewport().mapToGlobal(position))
     
@@ -1530,6 +1536,48 @@ class MainWindow(QMainWindow):
                 self
             )
     
+    def remove_selected_images_gps(self):
+        """Remove all GPS metadata (EXIF and XMP) from the selected images"""
+        selected_images = []
+        for row in self.table.selectionModel().selectedRows():
+            item = self.table.item(row.row(), 0)
+            if item:
+                image = item.data(Qt.ItemDataRole.UserRole)
+                if image:
+                    selected_images.append(image)
+
+        if not selected_images:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Remove GPS Coordinates",
+            f"Remove all GPS data from {len(selected_images)} image(s)?\n\n"
+            "This deletes the coordinates, altitude and GPS date/time from the "
+            "EXIF and XMP metadata.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            filepaths = [img.filepath for img in selected_images]
+            self.exiftool_service.delete_tags(filepaths, ['GPS:all', 'XMP-exif:GPS*'])
+
+            self.statusBar().showMessage(
+                f"GPS coordinates removed from {len(selected_images)} image(s)")
+
+            self.reload_images()
+
+        except Exception as e:
+            show_exiftool_error(
+                "Error Removing GPS Coordinates",
+                "Failed to remove GPS coordinates:",
+                str(e),
+                self
+            )
+
     def repair_selected_images_metadata(self):
         """Repair/fix metadata for selected images"""
         selected_rows = self.table.selectionModel().selectedRows()

@@ -279,15 +279,34 @@ class ExifToolService:
     def delete_tag(cls, filepaths: List[Path], tag: str, preserve_file_dates: bool = True) -> bool:
         """
         Delete a specific metadata tag from one or more files
-        
+
         Args:
             filepaths: List of paths to image files
             tag: Tag name to delete
             preserve_file_dates: If True, preserve file creation/modification dates (default: True)
-            
+
         Returns:
             True if successful
-            
+
+        Raises:
+            ExifToolError: If deletion fails
+        """
+        return cls.delete_tags(filepaths, [tag], preserve_file_dates)
+
+    @classmethod
+    def delete_tags(cls, filepaths: List[Path], tags: List[str], preserve_file_dates: bool = True) -> bool:
+        """
+        Delete several metadata tags from one or more files in a single pass
+
+        Args:
+            filepaths: List of paths to image files
+            tags: Tag names to delete; ExifTool group names (e.g. 'GPS:all') and
+                wildcards (e.g. 'XMP-exif:GPS*') are accepted
+            preserve_file_dates: If True, preserve file creation/modification dates (default: True)
+
+        Returns:
+            True if successful
+
         Raises:
             ExifToolError: If deletion fails
         """
@@ -311,7 +330,7 @@ class ExifToolService:
             if not app_settings.get('exiftool_create_backups', True):
                 cmd.append('-overwrite_original')
             
-            cmd.append(f'-{tag}=')
+            cmd.extend(f'-{tag}=' for tag in tags)
             cmd.extend([str(fp) for fp in filepaths])
             
             result = subprocess.run(
