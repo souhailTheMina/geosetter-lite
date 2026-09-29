@@ -51,44 +51,52 @@ class FileScanner:
             return images
         
         # Find all image files
-        for file_path in sorted(directory.iterdir()):
-            if file_path.is_file() and file_path.suffix in self.SUPPORTED_EXTENSIONS:
+        file_paths = [p for p in sorted(directory.iterdir())
+                      if p.is_file() and p.suffix in self.SUPPORTED_EXTENSIONS]
+
+        # One ExifTool run for the whole folder rather than one per file
+        batch_metadata = self.exiftool_service.read_metadata_batch(file_paths)
+
+        for file_path in file_paths:
+            try:
+                # Create image model with basic file info
+                image = ImageModel.from_file(file_path)
+
+                # Load metadata using ExifTool
                 try:
-                    # Create image model with basic file info
-                    image = ImageModel.from_file(file_path)
-                    
-                    # Load metadata using ExifTool
-                    try:
+                    metadata = batch_metadata.get(file_path)
+                    if metadata is None:
+                        # Not in the batch output: read it alone to get the error
                         metadata = self.exiftool_service.read_metadata(file_path)
-                        image.update_metadata(metadata)
-                        
-                        # Auto-write Created Date if it was set from Taken Date
-                        if image.taken_date and not metadata.get('EXIF:CreateDate'):
-                            try:
-                                created_date_str = image.taken_date.strftime('%Y:%m:%d %H:%M:%S')
-                                # Concatenate timezone offset to XMP tag if available
-                                tz_offset = image.tz_offset or ""
-                                xmp_date_str = created_date_str + tz_offset if tz_offset else created_date_str
-                                self.exiftool_service.write_metadata(
-                                    [file_path],
-                                    {
-                                        'EXIF:CreateDate': created_date_str,
-                                        'XMP-exif:DateTimeDigitized': xmp_date_str
-                                    }
-                                )
-                            except ExifToolError:
-                                # Silently ignore if write fails
-                                pass
-                        
-                    except ExifToolError as e:
-                        # Continue even if metadata reading fails
-                        print(f"Warning: Could not read metadata for {file_path.name}: {e}")
+                    image.update_metadata(metadata)
                     
-                    images.append(image)
+                    # Auto-write Created Date if it was set from Taken Date
+                    if image.taken_date and not metadata.get('EXIF:CreateDate'):
+                        try:
+                            created_date_str = image.taken_date.strftime('%Y:%m:%d %H:%M:%S')
+                            # Concatenate timezone offset to XMP tag if available
+                            tz_offset = image.tz_offset or ""
+                            xmp_date_str = created_date_str + tz_offset if tz_offset else created_date_str
+                            self.exiftool_service.write_metadata(
+                                [file_path],
+                                {
+                                    'EXIF:CreateDate': created_date_str,
+                                    'XMP-exif:DateTimeDigitized': xmp_date_str
+                                }
+                            )
+                        except ExifToolError:
+                            # Silently ignore if write fails
+                            pass
                     
-                except Exception as e:
-                    print(f"Warning: Could not process {file_path.name}: {e}")
-                    continue
+                except ExifToolError as e:
+                    # Continue even if metadata reading fails
+                    print(f"Warning: Could not read metadata for {file_path.name}: {e}")
+                
+                images.append(image)
+                
+            except Exception as e:
+                print(f"Warning: Could not process {file_path.name}: {e}")
+                continue
         
         return images
     

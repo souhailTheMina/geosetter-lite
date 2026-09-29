@@ -116,7 +116,8 @@ class MapClickHandler(QObject):
     clicked = Signal(float, float)  # latitude, longitude
     layer_changed = Signal(str)     # name of the newly selected base layer
     overlay_toggled = Signal(str, bool)  # overlay name, visible
-    
+    thumbnail_requested = Signal(str)    # id of the marker whose popup opened
+
     @Slot(float, float)
     def onMapClick(self, lat: float, lng: float):
         """Handle map click from JavaScript"""
@@ -131,6 +132,11 @@ class MapClickHandler(QObject):
     def onOverlayToggle(self, overlay_name: str, visible: bool):
         """Handle an overlay being shown or hidden from JavaScript"""
         self.overlay_toggled.emit(overlay_name, visible)
+
+    @Slot(str)
+    def onPopupOpen(self, marker_id: str):
+        """Handle a photo marker's popup being opened from JavaScript"""
+        self.thumbnail_requested.emit(marker_id)
 
 
 class MapWidget(QWidget):
@@ -151,6 +157,7 @@ class MapWidget(QWidget):
         self.click_handler.clicked.connect(self._on_map_clicked)
         self.click_handler.layer_changed.connect(self._on_layer_changed)
         self.click_handler.overlay_toggled.connect(self._on_overlay_toggled)
+        self.click_handler.thumbnail_requested.connect(self._on_thumbnail_requested)
         
         # Selected base layer. The map HTML is regenerated whenever markers or
         # the selection change, so this has to be remembered on the Python side
@@ -341,12 +348,19 @@ class MapWidget(QWidget):
         batch: List[str] = []
 
         for marker_id, (lat, lon, name, is_selected, filepath) in self.markers.items():
-            popup_html = self._generate_popup_html(name, filepath)
+            # Only thumbnails already made are embedded; the rest are made when
+            # their popup is first opened, so opening a folder does not decode
+            # every photo up front
+            popup_html = self._generate_popup_html(
+                name, filepath, thumbnail_data=self._cached_thumbnail(filepath))
             icon_var = 'window.blueIcon' if is_selected else 'window.greyIcon'
+            marker_id_js = json.dumps(marker_id)
             batch.append(
-                f"window.imageMarkers[{json.dumps(marker_id)}] = "
+                f"window.imageMarkers[{marker_id_js}] = "
                 f"L.marker([{lat}, {lon}], {{icon: {icon_var}}})"
-                f".addTo(window.map).bindPopup({json.dumps(popup_html)});"
+                f".addTo(window.map).bindPopup({json.dumps(popup_html)})"
+                f".on('popupopen', function() {{"
+                f" if (clickHandler) {{ clickHandler.onPopupOpen({marker_id_js}); }} }});"
             )
 
             if len(batch) >= MARKER_BATCH_SIZE:
@@ -1086,17 +1100,19 @@ class MapWidget(QWidget):
             return None
         
         try:
-            path = Path(filepath)
-            if not path.exists():
+            cache_key = self._thumbnail_cache_key(filepath)
+            if cache_key is None:
                 return None
-
-            stat = path.stat()
-            cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
             if cache_key in self._thumbnail_cache:
                 return self._thumbnail_cache[cache_key]
 
             # Open and resize image
-            with Image.open(path) as img:
+            with Image.open(filepath) as img:
+                # Shrink first: for JPEGs this lets the decoder work at reduced
+                # scale, and the colour conversion below then runs on a
+                # thumbnail instead of the full photo
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
                 # Convert to RGB if necessary (for PNG with transparency, etc.)
                 if img.mode in ('RGBA', 'LA', 'P'):
                     background = Image.new('RGB', img.size, (255, 255, 255))
@@ -1106,10 +1122,7 @@ class MapWidget(QWidget):
                     img = background
                 elif img.mode != 'RGB':
                     img = img.convert('RGB')
-                
-                # Calculate thumbnail size maintaining aspect ratio
-                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                
+
                 # Save to bytes
                 buffer = io.BytesIO()
                 img.save(buffer, format='JPEG', quality=85)
@@ -1125,19 +1138,64 @@ class MapWidget(QWidget):
             print(f"Error generating thumbnail for {filepath}: {e}")
             return None
     
-    def _generate_popup_html(self, filename: str, filepath: Optional[str]) -> str:
+    def _thumbnail_cache_key(self, filepath: Optional[str]) -> Optional[tuple]:
+        """Cache key for a file's thumbnail, or None if the file is missing"""
+        if not filepath:
+            return None
+        try:
+            stat = Path(filepath).stat()
+        except OSError:
+            return None
+        return (str(filepath), stat.st_mtime_ns, stat.st_size)
+
+    def _cached_thumbnail(self, filepath: Optional[str]) -> Optional[str]:
+        """Return the thumbnail for a file if it has already been generated"""
+        cache_key = self._thumbnail_cache_key(filepath)
+        return self._thumbnail_cache.get(cache_key) if cache_key else None
+
+    def _on_thumbnail_requested(self, marker_id: str):
+        """Fill in a marker's popup thumbnail the first time the popup opens"""
+        marker = self.markers.get(marker_id)
+        if not marker:
+            return
+
+        _, _, name, _, filepath = marker
+        if not filepath or self._cached_thumbnail(filepath):
+            return  # Nothing to show, or already embedded in the popup
+
+        thumbnail_data = self._generate_thumbnail(filepath)
+        # Without a thumbnail, drop the loading note and show just the filename
+        popup_html = self._generate_popup_html(
+            name, filepath if thumbnail_data else None, thumbnail_data=thumbnail_data)
+        self.web_view.page().runJavaScript(
+            f"(function() {{"
+            f" var m = window.imageMarkers && window.imageMarkers[{json.dumps(marker_id)}];"
+            f" if (m) {{ m.setPopupContent({json.dumps(popup_html)}); }}"
+            f" }})();"
+        )
+
+    def _generate_popup_html(self, filename: str, filepath: Optional[str],
+                             thumbnail_data: Optional[str] = None) -> str:
         """
         Generate HTML content for marker popup with thumbnail
-        
+
         Args:
             filename: Name of the image file
             filepath: Path to the image file
-            
+            thumbnail_data: Thumbnail data URL; without one the popup shows the
+                filename and a loading note until the thumbnail is filled in
+
         Returns:
             HTML string for the popup
         """
-        thumbnail_data = self._generate_thumbnail(filepath)
-        
+        if not thumbnail_data and filepath:
+            return f"""
+                <div style="text-align: center; min-width: 150px;">
+                    <div style="color: #888; margin-bottom: 8px;">Loading preview...</div>
+                    <div style="font-weight: bold; word-wrap: break-word;">{filename}</div>
+                </div>
+            """
+
         if thumbnail_data:
             return f"""
                 <div style="text-align: center; min-width: 150px;">

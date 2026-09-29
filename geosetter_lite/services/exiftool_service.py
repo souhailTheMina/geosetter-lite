@@ -118,7 +118,47 @@ class ExifToolService:
             raise ExifToolError(f"Failed to parse ExifTool output: {e}")
         except Exception as e:
             raise ExifToolError(f"Error reading metadata: {e}")
-    
+
+    @classmethod
+    def read_metadata_batch(cls, filepaths: List[Path], chunk_size: int = 200) -> Dict[Path, Dict[str, Any]]:
+        """
+        Read metadata for many files with one ExifTool process per chunk.
+
+        Starting ExifTool costs far more than reading one file's tags, so a
+        folder read file by file spends most of its time in process start-up.
+
+        Args:
+            filepaths: Paths to the image files
+            chunk_size: Files per ExifTool invocation
+
+        Returns:
+            Metadata keyed by path. Files ExifTool could not read are left out,
+            so the caller can fall back to read_metadata() for its error.
+        """
+        results: Dict[Path, Dict[str, Any]] = {}
+        exiftool = cls.get_exiftool_path()
+
+        for start in range(0, len(filepaths), chunk_size):
+            chunk = filepaths[start:start + chunk_size]
+            by_name = {str(fp): fp for fp in chunk}
+            try:
+                result = subprocess.run(
+                    [exiftool, '-charset', 'iptc=utf8', '-j', '-G', '-n', *by_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=10 + len(chunk)
+                )
+                # A non-zero exit only means some file failed; the rest are
+                # still in the output
+                for entry in json.loads(result.stdout or '[]'):
+                    path = by_name.get(entry.get('SourceFile'))
+                    if path is not None:
+                        results[path] = entry
+            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+                print(f"Warning: batch metadata read failed, reading files one by one: {e}")
+
+        return results
+
     @classmethod
     def _preserve_file_times(cls, filepaths: List[Path]) -> Dict[Path, tuple]:
         """

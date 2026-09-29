@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QEvent, QSize, QPoint, QTimer
 from PySide6.QtGui import QPixmap, QAction, QImage, QKeyEvent, QIcon, QPainter, QColor, QPen
 from PIL import Image, ImageOps
-import io
 from ..models.image_model import ImageModel
 from ..services.file_scanner import FileScanner
 from ..services.exiftool_service import ExifToolService
@@ -34,6 +33,10 @@ from .error_dialog import show_exiftool_error
 from .directory_toolbar import DirectoryToolbar
 from .rotate_dialog import RotateDialog
 from .. import __version__
+
+# Longest side, in pixels, of the picture decoded for the image viewer. Large
+# enough to stay sharp on a Retina display at typical pane sizes.
+PREVIEW_MAX_SIZE = 2048
 
 
 class MainWindow(QMainWindow):
@@ -895,8 +898,12 @@ class MainWindow(QMainWindow):
         self.current_image = image
         
         try:
-            # Load image using PIL
+            # The viewer only ever shows a pane-sized picture, so decode a
+            # preview rather than the full photo. For JPEGs, draft() makes the
+            # decoder itself work at 1/2, 1/4 or 1/8 scale, which is several
+            # times faster and keeps a large photo from needing hundreds of MB.
             pil_image = Image.open(image.filepath)
+            pil_image.draft('RGB', (PREVIEW_MAX_SIZE, PREVIEW_MAX_SIZE))
 
             # Get app settings and auto-rotate if enabled
             app_settings = Config.get_app_settings()
@@ -904,19 +911,17 @@ class MainWindow(QMainWindow):
                 orientation = image.metadata.get('EXIF:Orientation') if image.metadata else None
                 if orientation and orientation != 1:
                     pil_image = ImageOps.exif_transpose(pil_image)
-            
+
             # Convert to RGB if necessary
             if pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
-            
-            # Convert PIL Image to QPixmap directly (no temp file needed)
-            # Convert PIL Image to bytes
-            img_byte_array = io.BytesIO()
-            pil_image.save(img_byte_array, format='PNG')
-            img_byte_array.seek(0)
-            
-            # Load into QImage and convert to QPixmap
-            qimage = QImage.fromData(img_byte_array.read())
+
+            pil_image.thumbnail((PREVIEW_MAX_SIZE, PREVIEW_MAX_SIZE), Image.Resampling.BILINEAR)
+
+            # Hand the pixels to Qt directly; copy() detaches the QImage from the
+            # Python buffer before that is freed
+            qimage = QImage(pil_image.tobytes(), pil_image.width, pil_image.height,
+                            pil_image.width * 3, QImage.Format.Format_RGB888).copy()
             self.current_pixmap = QPixmap.fromImage(qimage)
             
             # Scale and display the pixmap
