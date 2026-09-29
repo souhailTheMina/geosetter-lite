@@ -153,6 +153,55 @@ uv sync
 pip install -e .
 ```
 
+### macOS Setup (step by step)
+
+Starting from a fresh Mac, after cloning the repository:
+
+1. Install [Homebrew](https://brew.sh) if it is not already installed, then run the
+   `eval ...` lines it prints at the end so `brew` is on your `PATH`:
+
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+
+2. Install ExifTool, jpegtran (from `jpeg-turbo`) and uv:
+
+   ```bash
+   brew install exiftool jpeg-turbo uv
+   ```
+
+3. Install Python and the project dependencies. uv reads `.python-version` and
+   downloads Python 3.12.9 itself, so no separate Python install is needed. This
+   step takes a while because the AI features pull in PyTorch.
+
+   ```bash
+   cd geosetter-lite
+   uv sync
+   ```
+
+4. Run the application:
+
+   ```bash
+   uv run python main.py
+   ```
+
+5. Optionally, build a double-clickable app and copy it to Applications:
+
+   ```bash
+   make package
+   cp -R "dist/GeoSetter Lite.app" /Applications/
+   ```
+
+   The app is unsigned, so macOS may block it the first time it is opened. If
+   that happens, right-click the app, choose **Open**, then **Open** again.
+
+Notes:
+
+- The first time Photo Similarity or Geolocation Prediction is used, the AI models
+  are downloaded, so an internet connection is needed then.
+- To update later, run `git pull && uv sync`. If you use the app bundle, also run
+  `make package` again and copy the new app over the old one.
+
 ## Usage
 
 ### Launch with File Dialog
