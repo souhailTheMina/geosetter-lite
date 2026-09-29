@@ -4,6 +4,7 @@ Map Widget - Display images on an OpenStreetMap using Leaflet
 from typing import List, Tuple, Optional
 import json
 import base64
+import filecmp
 from pathlib import Path
 from urllib.parse import quote
 from PySide6.QtWidgets import QWidget, QVBoxLayout
@@ -166,6 +167,7 @@ class MapWidget(QWidget):
         # Parsed form of the same overlays, kept so a parcel can be looked up by
         # id without re-reading the files
         self._parsed_overlays: List[dict] = []
+        self._add_bundled_overlays()
 
         # Markers are injected once the document is ready, so track that state and
         # hold the viewport JS that used to run at the end of the page script.
@@ -247,6 +249,34 @@ class MapWidget(QWidget):
         app_settings['map_overlays_hidden'] = hidden
         Config.set_app_settings(app_settings)
     
+    def _add_bundled_overlays(self):
+        """
+        Add overlays shipped in data/overlays that this user has not been
+        offered yet. Each bundled file is added once only, so clearing the
+        overlays is respected, while files added to the repo later still appear.
+        """
+        app_settings = Config.get_app_settings()
+        offered = set(app_settings.get('map_overlays_bundled', []))
+        overlays = list(app_settings.get('map_overlays', []))
+
+        added = False
+        for bundled in kmz_service.bundled_overlay_files():
+            if bundled.name in offered:
+                continue
+            offered.add(bundled.name)
+            added = True
+
+            # Skip a file the user already loaded from elsewhere, so the same
+            # overlay is not drawn twice
+            if not any(Path(p).exists() and filecmp.cmp(p, bundled, shallow=False)
+                       for p in overlays):
+                overlays.append(str(bundled))
+
+        if added:
+            app_settings['map_overlays'] = overlays
+            app_settings['map_overlays_bundled'] = sorted(offered)
+            Config.set_app_settings(app_settings)
+
     def set_overlay_files(self, paths: List[str]):
         """
         Replace the set of KMZ/KML overlay files and redraw the map.

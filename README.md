@@ -368,6 +368,11 @@ Keywords are automatically managed:
 Reference geometry can be drawn on the map beneath the photo markers - site
 boundaries, networks, parcels and similar.
 
+- **Bundled overlays**: every `.kmz`/`.kml` file in `data/overlays/` is loaded
+  automatically the first time the app starts, so a fresh install already shows
+  the team's site maps. Each bundled file is added once per user: clearing it is
+  remembered, and a file dropped into `data/overlays/` later is picked up on the
+  next start. A bundled file identical to one already loaded is not added twice
 - **File -> Add Map Overlay (KMZ/KML)...** loads one or more files
 - **File -> Clear Map Overlays** removes them all
 - Each file appears as a toggle in the map's layer switcher (top right), and both

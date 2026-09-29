@@ -32,6 +32,8 @@ a = Analysis(
         # Include data directory with CSV files
         ('data/world_locations.csv', 'data'),
         ('data/README.md', 'data'),
+        # Map overlays loaded automatically on first run
+        ('data/overlays', 'data/overlays'),
     ],
     hiddenimports=[
         'PySide6.QtCore',

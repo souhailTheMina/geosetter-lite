@@ -22,6 +22,7 @@ class Config:
             'map_layer': 'Hybrid',
             'map_overlays': [],
             'map_overlays_hidden': [],
+            'map_overlays_bundled': [],
             'map_overlay_clicks': False,
             'confirm_gps_update': False,
             'rename_pattern': '',

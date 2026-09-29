@@ -225,6 +225,24 @@ def _read_kml_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def bundled_overlay_files() -> List[Path]:
+    """
+    Return the KMZ/KML files shipped in the data/overlays directory.
+
+    Looks inside the package first (installed/built package), then in the
+    project root (development mode and the PyInstaller bundle).
+    """
+    module_dir = Path(__file__).parent.parent  # geosetter_lite package dir
+    overlay_dir = module_dir / "data" / "overlays"
+    if not overlay_dir.is_dir():
+        overlay_dir = module_dir.parent / "data" / "overlays"
+    if not overlay_dir.is_dir():
+        return []
+
+    return sorted(p for p in overlay_dir.iterdir()
+                  if p.suffix.lower() in ('.kmz', '.kml'))
+
+
 def load_overlay(filepath: str, tolerance: float = SIMPLIFY_TOLERANCE) -> dict:
     """
     Load a KMZ/KML file into a compact overlay description.
