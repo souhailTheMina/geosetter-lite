@@ -28,6 +28,27 @@ REQUEST_TIMEOUT_SECONDS = 10
 
 _RELEASE_DATE = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
 
+# Last release of each year as of October 2026, as (year, date, release number).
+# Offered when the list has never been downloaded, such as on a network that
+# blocks the Wayback configuration file, so the year selector is never empty.
+# Archived releases do not change, so these stay valid; only newer years are
+# missing until a download succeeds.
+_BUILTIN_RELEASES = (
+    ('2026', '2026-09-24', '63116'),
+    ('2025', '2025-12-18', '13192'),
+    ('2024', '2024-12-12', '16453'),
+    ('2023', '2023-12-07', '56102'),
+    ('2022', '2022-12-14', '45134'),
+    ('2021', '2021-12-21', '26120'),
+    ('2020', '2020-12-16', '29260'),
+    ('2019', '2019-12-12', '4756'),
+    ('2018', '2018-12-14', '23448'),
+    ('2017', '2017-11-16', '25521'),
+    ('2016', '2016-12-20', '18966'),
+    ('2015', '2015-12-16', '28163'),
+    ('2014', '2014-12-30', '5844'),
+)
+
 
 def _parse_yearly_releases(wayback_config: dict) -> List[Dict[str, str]]:
     """
@@ -53,12 +74,18 @@ def _parse_yearly_releases(wayback_config: dict) -> List[Dict[str, str]]:
 
 
 def load_cached_releases() -> List[Dict[str, str]]:
-    """Return the releases saved by the last successful fetch, if any"""
+    """Return the releases saved by the last successful fetch, else the built-in list"""
     try:
         with open(CACHE_FILE, 'r') as f:
-            return json.load(f).get('releases', [])
+            releases = json.load(f).get('releases', [])
+        if releases:
+            return releases
     except (OSError, ValueError, AttributeError):
-        return []
+        pass
+    return [
+        {'year': year, 'date': date, 'url': WAYBACK_TILE_URL.format(release=release)}
+        for year, date, release in _BUILTIN_RELEASES
+    ]
 
 
 def cache_is_fresh() -> bool:

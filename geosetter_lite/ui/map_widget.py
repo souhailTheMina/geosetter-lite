@@ -355,6 +355,10 @@ class MapWidget(QWidget):
         for statement in self._build_overlay_js():
             page.runJavaScript(statement)
 
+        # The release list can arrive while the page is still loading, after
+        # the document was built with the older list, so hand it over again
+        self._push_imagery_releases_js()
+
         # Runs last: fitting to markers is only meaningful once they exist
         if self._pending_fit_bounds_js:
             page.runJavaScript(self._pending_fit_bounds_js)
@@ -560,10 +564,15 @@ class MapWidget(QWidget):
         if releases == self.imagery_releases:
             return
         self.imagery_releases = releases
+        # Otherwise the load handler pushes it once the page is ready
         if self._map_loaded:
-            self.web_view.page().runJavaScript(
-                f"if (window.gslSetImageryReleases) {{ "
-                f"window.gslSetImageryReleases({json.dumps(releases)}); }}")
+            self._push_imagery_releases_js()
+    
+    def _push_imagery_releases_js(self):
+        """Refresh the year selector of the loaded map with the current release list"""
+        self.web_view.page().runJavaScript(
+            f"if (window.gslSetImageryReleases) {{ "
+            f"window.gslSetImageryReleases({json.dumps(self.imagery_releases)}); }}")
     
     def _on_imagery_year_changed(self, year: str):
         """Remember the imagery year the user picked, across reloads and restarts"""
