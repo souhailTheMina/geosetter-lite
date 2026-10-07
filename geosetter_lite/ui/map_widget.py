@@ -4,6 +4,7 @@ Map Widget - Display images on an OpenStreetMap using Leaflet
 from typing import List, Tuple, Optional
 import json
 import base64
+import threading
 import filecmp
 from pathlib import Path
 from urllib.parse import quote
@@ -15,7 +16,7 @@ from PySide6.QtCore import QUrl, QObject, Signal, Slot
 from PIL import Image
 import io
 from ..core.config import Config
-from ..services import kmz_service
+from ..services import kmz_service, imagery_service
 
 # Import Leaflet resources from Qt resource system
 import geosetter_lite.resources.resources_rc #noqa: F401
@@ -59,6 +60,10 @@ OSM_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">'
                    'OpenStreetMap</a> contributors')
 
 MAX_TILE_ZOOM = 19
+
+# Value of the imagery date selector meaning the current World Imagery rather
+# than an archived release
+IMAGERY_LATEST = 'latest'
 
 # Markers are injected in batches rather than one statement per photo, which keeps
 # the number of round trips to the page down on large directories.
@@ -115,6 +120,7 @@ class MapClickHandler(QObject):
     
     clicked = Signal(float, float)  # latitude, longitude
     layer_changed = Signal(str)     # name of the newly selected base layer
+    imagery_year_changed = Signal(str)   # year picked in the imagery selector
     overlay_toggled = Signal(str, bool)  # overlay name, visible
     thumbnail_requested = Signal(str)    # id of the marker whose popup opened
 
@@ -127,6 +133,11 @@ class MapClickHandler(QObject):
     def onLayerChange(self, layer_name: str):
         """Handle base layer selection from JavaScript"""
         self.layer_changed.emit(layer_name)
+    
+    @Slot(str)
+    def onImageryYearChange(self, year: str):
+        """Handle an imagery year being picked from JavaScript"""
+        self.imagery_year_changed.emit(year)
     
     @Slot(str, bool)
     def onOverlayToggle(self, overlay_name: str, visible: bool):
@@ -144,6 +155,8 @@ class MapWidget(QWidget):
     
     # Signal emitted when map is clicked
     map_clicked = Signal(float, float)
+    # Emitted from a worker thread with a fresh list of imagery releases
+    _imagery_releases_fetched = Signal(list)
     
     def __init__(self, parent=None):
         """Initialize the map widget"""
@@ -156,6 +169,7 @@ class MapWidget(QWidget):
         self.click_handler = MapClickHandler()
         self.click_handler.clicked.connect(self._on_map_clicked)
         self.click_handler.layer_changed.connect(self._on_layer_changed)
+        self.click_handler.imagery_year_changed.connect(self._on_imagery_year_changed)
         self.click_handler.overlay_toggled.connect(self._on_overlay_toggled)
         self.click_handler.thumbnail_requested.connect(self._on_thumbnail_requested)
         
@@ -166,6 +180,15 @@ class MapWidget(QWidget):
             'map_layer', DEFAULT_MAP_LAYER)
         if self.current_layer not in MAP_LAYERS:
             self.current_layer = DEFAULT_MAP_LAYER
+        
+        # Archived imagery releases, one per year. The cached list is used right
+        # away and refreshed in the background so startup never waits on it.
+        self.imagery_releases: List[dict] = imagery_service.load_cached_releases()
+        self.imagery_year: str = str(Config.get_app_settings().get(
+            'map_imagery_year', IMAGERY_LATEST))
+        self._imagery_releases_fetched.connect(self._on_imagery_releases_fetched)
+        if not self.imagery_releases or not imagery_service.cache_is_fresh():
+            threading.Thread(target=self._fetch_imagery_releases, daemon=True).start()
         
         # KMZ/KML overlays. Parsing is slow enough to be worth doing once, and
         # the serialised form is reused every time the map document is rebuilt.
@@ -523,6 +546,35 @@ class MapWidget(QWidget):
         app_settings['map_layer'] = layer_name
         Config.set_app_settings(app_settings)
     
+    def _fetch_imagery_releases(self):
+        """Download the imagery release list (runs on a worker thread)"""
+        try:
+            releases = imagery_service.fetch_releases()
+        except Exception as e:
+            print(f"Could not fetch imagery releases: {e}")
+            return
+        self._imagery_releases_fetched.emit(releases)
+    
+    def _on_imagery_releases_fetched(self, releases: list):
+        """Offer a newly fetched release list in the map's year selector"""
+        if releases == self.imagery_releases:
+            return
+        self.imagery_releases = releases
+        if self._map_loaded:
+            self.web_view.page().runJavaScript(
+                f"if (window.gslSetImageryReleases) {{ "
+                f"window.gslSetImageryReleases({json.dumps(releases)}); }}")
+    
+    def _on_imagery_year_changed(self, year: str):
+        """Remember the imagery year the user picked, across reloads and restarts"""
+        if year == self.imagery_year:
+            return
+        
+        self.imagery_year = year
+        app_settings = Config.get_app_settings()
+        app_settings['map_imagery_year'] = year
+        Config.set_app_settings(app_settings)
+    
     def _on_map_clicked(self, lat: float, lng: float):
         """Handle map click event"""
         self.active_marker = (lat, lng)
@@ -687,6 +739,9 @@ class MapWidget(QWidget):
         layer_hybrid = LAYER_HYBRID
         layer_street = LAYER_STREET
         current_layer = self.current_layer
+        imagery_latest = IMAGERY_LATEST
+        imagery_releases = json.dumps(self.imagery_releases)
+        imagery_year = json.dumps(self.imagery_year)
         layers_icon = LAYERS_ICON_DATA_URI
         overlay_clicks_name = OVERLAY_CLICKS_LAYER_NAME
         overlay_clicks_enabled = 'true' if Config.get_app_settings().get(
@@ -728,6 +783,9 @@ class MapWidget(QWidget):
                     width: 30px;
                     height: 30px;
                 }}
+                .gsl-imagery-section select {{
+                    margin-left: 4px;
+                }}
                 .leaflet-control-compass {{
                     background: white;
                     padding: 5px;
@@ -765,11 +823,27 @@ class MapWidget(QWidget):
                 // Build the selectable base layers. Each needs its own tile
                 // layer instance, since Leaflet adds and removes them as the
                 // user switches between views.
+                // Kept so the imagery year selector can repoint every
+                // instance at an archived release
+                window.imageryLayers = [];
+                window.imageryReleases = {imagery_releases};
+                
+                function imageryUrl(year) {{
+                    for (var i = 0; i < window.imageryReleases.length; i++) {{
+                        if (window.imageryReleases[i].year === year) {{
+                            return window.imageryReleases[i].url;
+                        }}
+                    }}
+                    return '{esri_imagery_url}';
+                }}
+                
                 function imageryTiles() {{
-                    return L.tileLayer('{esri_imagery_url}', {{
+                    var layer = L.tileLayer(imageryUrl({imagery_year}), {{
                         attribution: '{esri_imagery_attribution}',
                         maxZoom: {max_zoom}
                     }});
+                    window.imageryLayers.push(layer);
+                    return layer;
                 }}
                 
                 var baseLayers = {{}};
@@ -922,7 +996,19 @@ class MapWidget(QWidget):
                 // Overlays are injected after load rather than embedded:
                 // QWebEnginePage.setHtml() silently refuses documents over 2 MB,
                 // and a single KMZ can exceed that on its own.
-                window.layerControl = L.control.layers(baseLayers, null, {{
+                // The switcher folds away when the pointer leaves it. Opening the
+                // imagery year list counts as leaving, since the list is drawn
+                // outside the page, so folding is held off while it is in use.
+                // Leaflet binds collapse when the control is built, hence a
+                // subclass rather than patching the instance afterwards.
+                var GslLayersControl = L.Control.Layers.extend({{
+                    collapse: function() {{
+                        if (this._gslKeepOpen) {{ return this; }}
+                        return L.Control.Layers.prototype.collapse.apply(this, arguments);
+                    }}
+                }});
+                
+                window.layerControl = new GslLayersControl(baseLayers, null, {{
                     position: 'topright',
                     collapsed: true
                 }}).addTo(map);
@@ -956,8 +1042,85 @@ class MapWidget(QWidget):
                     if (clickHandler) {{ clickHandler.onOverlayToggle(e.name, false); }}
                 }});
                 
+                // ---- Imagery year selector -------------------------------
+                // A section at the bottom of the layer switcher. Esri archives
+                // each version of its imagery, so an older year shows the area
+                // as it was then. The layer switcher already stops clicks in it
+                // from reaching the map, so picking a year keeps the active marker.
+                (function() {{
+                    var list = window.layerControl.getContainer()
+                        .querySelector('.leaflet-control-layers-list');
+                    L.DomUtil.create('div', 'leaflet-control-layers-separator', list);
+                    var section = L.DomUtil.create('div', 'gsl-imagery-section', list);
+                    section.title = 'Date of the satellite imagery';
+                    section.appendChild(document.createTextNode('Imagery'));
+                    var select = L.DomUtil.create('select', '', section);
+                    window.imageryYearSelect = select;
+                    var control = window.layerControl;
+                    var container = control.getContainer();
+                    
+                    // Held open from the moment the list is opened until a year
+                    // is picked, the pointer comes back, or the map is clicked
+                    L.DomEvent.on(select, 'mousedown focus', function() {{
+                        control._gslKeepOpen = true;
+                    }});
+                    L.DomEvent.on(container, 'mouseenter', function() {{
+                        control._gslKeepOpen = false;
+                    }});
+                    map.on('click', function() {{
+                        control._gslKeepOpen = false;
+                        control.collapse();
+                    }});
+                    
+                    L.DomEvent.on(select, 'change', function() {{
+                        gslApplyImageryYear(select.value);
+                        if (clickHandler) {{ clickHandler.onImageryYearChange(select.value); }}
+                        control._gslKeepOpen = false;
+                        select.blur();
+                        if (!container.matches(':hover')) {{ control.collapse(); }}
+                    }});
+                }})();
+                
+                function gslApplyImageryYear(year) {{
+                    var url = imageryUrl(year);
+                    for (var i = 0; i < window.imageryLayers.length; i++) {{
+                        window.imageryLayers[i].setUrl(url);
+                    }}
+                }}
+                
+                function gslSetImageryReleases(releases) {{
+                    var select = window.imageryYearSelect;
+                    var wanted = select.value || {imagery_year};
+                    window.imageryReleases = releases;
+                    select.innerHTML = '';
+                    var latest = document.createElement('option');
+                    latest.value = '{imagery_latest}';
+                    latest.textContent = 'Latest';
+                    select.appendChild(latest);
+                    for (var i = 0; i < releases.length; i++) {{
+                        var option = document.createElement('option');
+                        option.value = releases[i].year;
+                        option.textContent = releases[i].year;
+                        option.title = 'Esri release of ' + releases[i].date;
+                        select.appendChild(option);
+                    }}
+                    // A year missing from the list falls back to the latest imagery
+                    select.value = wanted;
+                    if (select.value !== wanted) {{ select.value = '{imagery_latest}'; }}
+                    gslApplyImageryYear(select.value);
+                }}
+                window.gslSetImageryReleases = gslSetImageryReleases;
+                gslSetImageryReleases(window.imageryReleases);
+                
+                // Street view has no imagery, so the date does not apply
+                function gslUpdateImageryControl(layerName) {{
+                    window.imageryYearSelect.disabled = (layerName === '{layer_street}');
+                }}
+                gslUpdateImageryControl('{current_layer}');
+                
                 // Report layer changes so the choice survives the next reload
                 map.on('baselayerchange', function(e) {{
+                    gslUpdateImageryControl(e.name);
                     if (clickHandler) {{
                         clickHandler.onLayerChange(e.name);
                     }}

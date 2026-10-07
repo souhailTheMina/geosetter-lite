@@ -20,6 +20,7 @@ class Config:
             'preserve_map_zoom': True,
             'default_map_zoom': 10,
             'map_layer': 'Hybrid',
+            'map_imagery_year': 'latest',
             'map_overlays': [],
             'map_overlays_hidden': [],
             'map_overlays_bundled': [],
