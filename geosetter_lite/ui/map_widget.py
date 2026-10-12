@@ -66,11 +66,16 @@ OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
 OSM_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">'
                    'OpenStreetMap</a> contributors')
 
+# Deepest zoom the tile servers provide for Esri and OpenStreetMap. The map can
+# zoom further than that, enlarging those tiles, which helps when placing
+# photos taken close together.
 MAX_TILE_ZOOM = 19
+MAX_MAP_ZOOM = 22
 
 # Google's imagery goes deeper than Esri's in most cities. Where it runs out
 # sooner, the map learns the real limit from the viewport query and enlarges the
-# last available tiles instead of showing blank ones.
+# last available tiles instead of showing blank ones. Past this limit the tiles
+# are enlarged too, up to MAX_MAP_ZOOM.
 GOOGLE_MAX_ZOOM = 21
 GOOGLE_ATTRIBUTION = '&copy; Google'
 
@@ -699,10 +704,10 @@ class MapWidget(QWidget):
                 iconUrl: '{LEAFLET_MARKER_ICON_URL}',
                 iconRetinaUrl: '{LEAFLET_MARKER_ICON_RETINA_URL}',
                 shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
-                iconSize: [25, 41],
-                iconAnchor: [12, 41],
-                popupAnchor: [1, -34],
-                shadowSize: [41, 41],
+                iconSize: [20, 33],
+                iconAnchor: [10, 33],
+                popupAnchor: [1, -27],
+                shadowSize: [33, 33],
                 className: 'blue-marker'
             }});
             
@@ -710,10 +715,10 @@ class MapWidget(QWidget):
                 iconUrl: '{LEAFLET_MARKER_ICON_URL}',
                 iconRetinaUrl: '{LEAFLET_MARKER_ICON_RETINA_URL}',
                 shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
-                iconSize: [25, 41],
-                iconAnchor: [12, 41],
-                popupAnchor: [1, -34],
-                shadowSize: [41, 41],
+                iconSize: [20, 33],
+                iconAnchor: [10, 33],
+                popupAnchor: [1, -27],
+                shadowSize: [33, 33],
                 className: 'grey-marker'
             }});
         """
@@ -817,7 +822,8 @@ class MapWidget(QWidget):
         esri_labels_attribution = ESRI_LABELS_ATTRIBUTION
         osm_tile_url = OSM_TILE_URL
         osm_attribution = OSM_ATTRIBUTION
-        max_zoom = MAX_TILE_ZOOM
+        max_zoom = MAX_MAP_ZOOM
+        max_native_zoom = MAX_TILE_ZOOM
         layer_satellite = LAYER_SATELLITE
         layer_hybrid = LAYER_HYBRID
         layer_street = LAYER_STREET
@@ -927,7 +933,8 @@ class MapWidget(QWidget):
                 function imageryTiles() {{
                     var layer = L.tileLayer(imageryUrl({imagery_year}), {{
                         attribution: '{esri_imagery_attribution}',
-                        maxZoom: {max_zoom}
+                        maxZoom: {max_zoom},
+                        maxNativeZoom: {max_native_zoom}
                     }});
                     window.imageryLayers.push(layer);
                     return layer;
@@ -939,12 +946,14 @@ class MapWidget(QWidget):
                     imageryTiles(),
                     L.tileLayer('{esri_labels_url}', {{
                         attribution: '{esri_labels_attribution}',
-                        maxZoom: {max_zoom}
+                        maxZoom: {max_zoom},
+                        maxNativeZoom: {max_native_zoom}
                     }})
                 ]);
                 baseLayers['{layer_street}'] = L.tileLayer('{osm_tile_url}', {{
                     attribution: '{osm_attribution}',
-                    maxZoom: {max_zoom}
+                    maxZoom: {max_zoom},
+                    maxNativeZoom: {max_native_zoom}
                 }});
                 
                 // Restore the layer the user last selected. A Google layer is
@@ -1278,7 +1287,8 @@ class MapWidget(QWidget):
                     layers.forEach(function(item) {{
                         var tiles = L.tileLayer(item.url, {{
                             attribution: '{google_attribution}',
-                            maxZoom: {google_max_zoom},
+                            maxZoom: {max_zoom},
+                            maxNativeZoom: {google_max_zoom},
                             gslSession: item.session
                         }});
                         window.googleLayers[item.name] = tiles;
@@ -1351,10 +1361,10 @@ class MapWidget(QWidget):
             var redIcon = L.icon({{
                 iconUrl: '{LEAFLET_MARKER_ICON_RED_URL}',
                 shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
-                iconSize: [25, 41],
-                iconAnchor: [12, 41],
-                popupAnchor: [1, -34],
-                shadowSize: [41, 41]
+                iconSize: [20, 33],
+                iconAnchor: [10, 33],
+                popupAnchor: [1, -27],
+                shadowSize: [33, 33]
             }});
             
             // Add new active marker with draggable option
@@ -1690,10 +1700,10 @@ class MapWidget(QWidget):
                         iconUrl: '{LEAFLET_MARKER_ICON_URL}',
                         iconRetinaUrl: '{LEAFLET_MARKER_ICON_RETINA_URL}',
                         shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41],
+                        iconSize: [20, 33],
+                        iconAnchor: [10, 33],
+                        popupAnchor: [1, -27],
+                        shadowSize: [33, 33],
                         className: 'blue-marker'
                     }});
                 }}
@@ -1702,10 +1712,10 @@ class MapWidget(QWidget):
                         iconUrl: '{LEAFLET_MARKER_ICON_URL}',
                         iconRetinaUrl: '{LEAFLET_MARKER_ICON_RETINA_URL}',
                         shadowUrl: '{LEAFLET_MARKER_SHADOW_URL}',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41],
+                        iconSize: [20, 33],
+                        iconAnchor: [10, 33],
+                        popupAnchor: [1, -27],
+                        shadowSize: [33, 33],
                         className: 'grey-marker'
                     }});
                 }}
@@ -1773,7 +1783,7 @@ class MapWidget(QWidget):
         Args:
             latitude: Latitude coordinate
             longitude: Longitude coordinate
-            zoom: Zoom level (1-19)
+            zoom: Zoom level (1-22)
         """
         longitude = _wrap_longitude(longitude)
         js = f"if (window.map) {{ window.map.setView([{latitude}, {longitude}], {zoom}); }}"
