@@ -16,7 +16,7 @@ from PySide6.QtCore import QUrl, QObject, Signal, Slot
 from PIL import Image
 import io
 from ..core.config import Config
-from ..services import kmz_service, imagery_service
+from ..services import kmz_service, imagery_service, google_tiles_service
 
 # Import Leaflet resources from Qt resource system
 import geosetter_lite.resources.resources_rc #noqa: F401
@@ -42,7 +42,14 @@ OSM_USER_AGENT = b'GeoSetterLite/1.0 (+https://github.com/asaintsever/geosetter-
 LAYER_SATELLITE = 'Satellite'
 LAYER_HYBRID = 'Hybrid'
 LAYER_STREET = 'Street'
-MAP_LAYERS = (LAYER_SATELLITE, LAYER_HYBRID, LAYER_STREET)
+
+# Google layers are only offered once an API key is set in the settings
+GOOGLE_LAYER_NAMES = {
+    google_tiles_service.LAYER_SATELLITE: 'Google Satellite',
+    google_tiles_service.LAYER_HYBRID: 'Google Hybrid',
+    google_tiles_service.LAYER_ROADMAP: 'Google Map',
+}
+MAP_LAYERS = (LAYER_SATELLITE, LAYER_HYBRID, LAYER_STREET) + tuple(GOOGLE_LAYER_NAMES.values())
 DEFAULT_MAP_LAYER = LAYER_HYBRID
 
 ESRI_IMAGERY_URL = ('https://server.arcgisonline.com/ArcGIS/rest/services/'
@@ -60,6 +67,12 @@ OSM_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">'
                    'OpenStreetMap</a> contributors')
 
 MAX_TILE_ZOOM = 19
+
+# Google's imagery goes deeper than Esri's in most cities. Where it runs out
+# sooner, the map learns the real limit from the viewport query and enlarges the
+# last available tiles instead of showing blank ones.
+GOOGLE_MAX_ZOOM = 21
+GOOGLE_ATTRIBUTION = '&copy; Google'
 
 # Value of the imagery date selector meaning the current World Imagery rather
 # than an archived release
@@ -157,6 +170,8 @@ class MapWidget(QWidget):
     map_clicked = Signal(float, float)
     # Emitted from a worker thread with a fresh list of imagery releases
     _imagery_releases_fetched = Signal(list)
+    # Emitted from a worker thread with Google tile sessions for the current key
+    _google_sessions_fetched = Signal(str, dict)
     
     def __init__(self, parent=None):
         """Initialize the map widget"""
@@ -190,6 +205,12 @@ class MapWidget(QWidget):
         if not self.imagery_releases or not imagery_service.cache_is_fresh():
             threading.Thread(target=self._fetch_imagery_releases, daemon=True).start()
         
+        # Google tile sessions, keyed by layer id. Empty until a key is set and
+        # sessions exist for it, in which case the Google layers are left out.
+        self.google_api_key: str = ''
+        self.google_sessions: dict = {}
+        self._google_sessions_fetched.connect(self._on_google_sessions_fetched)
+        
         # KMZ/KML overlays. Parsing is slow enough to be worth doing once, and
         # the serialised form is reused every time the map document is rebuilt.
         self._overlay_cache: Optional[List[str]] = None
@@ -220,6 +241,8 @@ class MapWidget(QWidget):
         self.pending_reload: bool = False
         self.preserve_viewport_completely: bool = False  # Set when map click, don't recenter
         self.skip_viewport_capture: bool = False  # Skip capture when fitting to selected markers
+        
+        self.set_google_api_key(Config.get_app_settings().get('map_google_api_key', ''))
         
         self.init_ui()
     
@@ -358,6 +381,8 @@ class MapWidget(QWidget):
         # The release list can arrive while the page is still loading, after
         # the document was built with the older list, so hand it over again
         self._push_imagery_releases_js()
+
+        self._push_google_layers_js()
 
         # Runs last: fitting to markers is only meaningful once they exist
         if self._pending_fit_bounds_js:
@@ -550,6 +575,55 @@ class MapWidget(QWidget):
         app_settings['map_layer'] = layer_name
         Config.set_app_settings(app_settings)
     
+    def set_google_api_key(self, api_key: str):
+        """
+        Offer the Google layers for this API key, or remove them if it is empty.
+        Cached sessions are used straight away; otherwise they are created in
+        the background and the layers appear once they are ready.
+        """
+        api_key = (api_key or '').strip()
+        if api_key == self.google_api_key and (self.google_sessions or not api_key):
+            return
+
+        self.google_api_key = api_key
+        self.google_sessions = google_tiles_service.load_cached_sessions(api_key) if api_key else {}
+        if self._map_loaded:
+            self._push_google_layers_js()
+        if api_key and not self.google_sessions:
+            threading.Thread(target=self._fetch_google_sessions, args=(api_key,),
+                             daemon=True).start()
+
+    def _fetch_google_sessions(self, api_key: str):
+        """Create Google tile sessions (runs on a worker thread)"""
+        try:
+            sessions = google_tiles_service.fetch_sessions(api_key)
+        except Exception as e:
+            print(f"Could not create Google tile sessions: {e}")
+            return
+        self._google_sessions_fetched.emit(api_key, sessions)
+
+    def _on_google_sessions_fetched(self, api_key: str, sessions: dict):
+        """Add the Google layers once their sessions exist"""
+        # The key may have been changed while the sessions were being created
+        if api_key != self.google_api_key:
+            return
+        self.google_sessions = sessions
+        if self._map_loaded:
+            self._push_google_layers_js()
+
+    def _push_google_layers_js(self):
+        """Add (or remove) the Google layers in the loaded map's layer switcher"""
+        layers = [
+            {'name': GOOGLE_LAYER_NAMES[layer_id],
+             'url': google_tiles_service.tile_url(self.google_api_key, session['session']),
+             'session': session['session']}
+            for layer_id, session in self.google_sessions.items()
+        ]
+        self.web_view.page().runJavaScript(
+            f"if (window.gslSetGoogleLayers) {{ "
+            f"window.gslSetGoogleLayers({json.dumps(layers)}, "
+            f"{json.dumps(self.google_api_key)}, {json.dumps(self.current_layer)}); }}")
+
     def _fetch_imagery_releases(self):
         """Download the imagery release list (runs on a worker thread)"""
         try:
@@ -747,7 +821,11 @@ class MapWidget(QWidget):
         layer_satellite = LAYER_SATELLITE
         layer_hybrid = LAYER_HYBRID
         layer_street = LAYER_STREET
+        default_layer = DEFAULT_MAP_LAYER
         current_layer = self.current_layer
+        google_max_zoom = GOOGLE_MAX_ZOOM
+        google_attribution = GOOGLE_ATTRIBUTION
+        google_viewport_url = google_tiles_service.VIEWPORT_URL
         imagery_latest = IMAGERY_LATEST
         imagery_releases = json.dumps(self.imagery_releases)
         imagery_year = json.dumps(self.imagery_year)
@@ -869,8 +947,10 @@ class MapWidget(QWidget):
                     maxZoom: {max_zoom}
                 }});
                 
-                // Restore the layer the user last selected
-                baseLayers['{current_layer}'].addTo(map);
+                // Restore the layer the user last selected. A Google layer is
+                // not built until its session is pushed in after load, so start
+                // on the default and let gslSetGoogleLayers switch over.
+                (baseLayers['{current_layer}'] || baseLayers['{default_layer}']).addTo(map);
                 
                 // ---- KMZ/KML overlays ----------------------------------
                 // Thousands of shapes render far faster on canvas than as
@@ -1121,15 +1201,111 @@ class MapWidget(QWidget):
                 window.gslSetImageryReleases = gslSetImageryReleases;
                 gslSetImageryReleases(window.imageryReleases);
                 
-                // Street view has no imagery, so the date does not apply
+                // The archived years are Esri releases, so the date only
+                // applies to the Esri imagery layers
                 function gslUpdateImageryControl(layerName) {{
-                    window.imageryYearSelect.disabled = (layerName === '{layer_street}');
+                    window.imageryYearSelect.disabled =
+                        (layerName !== '{layer_satellite}' && layerName !== '{layer_hybrid}');
                 }}
                 gslUpdateImageryControl('{current_layer}');
+                
+                // ---- Google layers --------------------------------------
+                // Pushed in after load, once tile sessions exist for the API
+                // key. Calling again replaces them; an empty list removes them.
+                window.googleLayers = {{}};
+                var googleApiKey = '';
+                
+                function gslActiveGoogleLayer() {{
+                    var names = Object.keys(window.googleLayers);
+                    for (var i = 0; i < names.length; i++) {{
+                        if (map.hasLayer(window.googleLayers[names[i]])) {{
+                            return window.googleLayers[names[i]];
+                        }}
+                    }}
+                    return null;
+                }}
+                
+                // Google's terms require the copyright of the imagery in view,
+                // which varies by place, and it also reports how deep the
+                // imagery goes there
+                var googleViewportRequest = 0;
+                function gslUpdateGoogleViewport() {{
+                    var layer = gslActiveGoogleLayer();
+                    if (!layer) {{ return; }}
+                    var bounds = map.getBounds();
+                    var request = ++googleViewportRequest;
+                    var url = '{google_viewport_url}'
+                        + '?session=' + encodeURIComponent(layer.options.gslSession)
+                        + '&key=' + encodeURIComponent(googleApiKey)
+                        + '&zoom=' + map.getZoom()
+                        + '&north=' + Math.min(bounds.getNorth(), 90)
+                        + '&south=' + Math.max(bounds.getSouth(), -90)
+                        + '&east=' + Math.min(bounds.getEast(), 180)
+                        + '&west=' + Math.max(bounds.getWest(), -180);
+                    fetch(url).then(function(response) {{
+                        return response.ok ? response.json() : null;
+                    }}).then(function(data) {{
+                        // A newer move may have answered first
+                        if (!data || request !== googleViewportRequest
+                                || gslActiveGoogleLayer() !== layer) {{ return; }}
+                        var attribution = data.copyright
+                            ? '&copy; Google &mdash; ' + gslEscape(data.copyright)
+                            : '{google_attribution}';
+                        if (attribution !== layer.options.attribution) {{
+                            map.attributionControl.removeAttribution(layer.options.attribution);
+                            layer.options.attribution = attribution;
+                            map.attributionControl.addAttribution(attribution);
+                        }}
+                        if (data.maxZoom && data.maxZoom !== layer.options.maxNativeZoom) {{
+                            layer.options.maxNativeZoom = Math.min(data.maxZoom, {google_max_zoom});
+                            layer.redraw();
+                        }}
+                    }}).catch(function() {{ /* keep the generic attribution */ }});
+                }}
+                map.on('moveend', gslUpdateGoogleViewport);
+                
+                function gslSetGoogleLayers(layers, apiKey, preferred) {{
+                    googleApiKey = apiKey;
+                    var wasShowing = !!gslActiveGoogleLayer();
+                    Object.keys(window.googleLayers).forEach(function(name) {{
+                        var old = window.googleLayers[name];
+                        map.removeLayer(old);
+                        window.layerControl.removeLayer(old);
+                        delete baseLayers[name];
+                    }});
+                    window.googleLayers = {{}};
+                    
+                    layers.forEach(function(item) {{
+                        var tiles = L.tileLayer(item.url, {{
+                            attribution: '{google_attribution}',
+                            maxZoom: {google_max_zoom},
+                            gslSession: item.session
+                        }});
+                        window.googleLayers[item.name] = tiles;
+                        baseLayers[item.name] = tiles;
+                        window.layerControl.addBaseLayer(tiles, item.name);
+                    }});
+                    
+                    // Switch to the Google layer the user last picked, or off a
+                    // Google layer whose key was just removed
+                    var target = window.googleLayers[preferred]
+                        || (wasShowing ? baseLayers['{default_layer}'] : null);
+                    if (target && !map.hasLayer(target)) {{
+                        Object.keys(baseLayers).forEach(function(name) {{
+                            map.removeLayer(baseLayers[name]);
+                        }});
+                        target.addTo(map);
+                        gslUpdateImageryControl(window.googleLayers[preferred]
+                            ? preferred : '{default_layer}');
+                    }}
+                    gslUpdateGoogleViewport();
+                }}
+                window.gslSetGoogleLayers = gslSetGoogleLayers;
                 
                 // Report layer changes so the choice survives the next reload
                 map.on('baselayerchange', function(e) {{
                     gslUpdateImageryControl(e.name);
+                    gslUpdateGoogleViewport();
                     if (clickHandler) {{
                         clickHandler.onLayerChange(e.name);
                     }}

@@ -4,11 +4,12 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, 
     QLineEdit, QPushButton, QGroupBox, QFormLayout, QFileDialog,
-    QMessageBox, QCheckBox
+    QMessageBox, QCheckBox, QApplication
 )
 from PySide6.QtCore import Qt
 
 from ..core.config import Config
+from ..services import google_tiles_service
 
 
 class SettingsDialog(QDialog):
@@ -200,6 +201,21 @@ class SettingsDialog(QDialog):
         confirm_gps_help_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
         map_layout.addRow(confirm_gps_help_label)
 
+        # Google Maps API key, which unlocks the Google layers
+        self.google_key_edit = QLineEdit(self.app_settings.get('map_google_api_key', ''))
+        self.google_key_edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        self.google_key_edit.setPlaceholderText("Leave empty to use Esri and OpenStreetMap only")
+        map_layout.addRow("Google Maps API Key:", self.google_key_edit)
+
+        google_key_help_label = QLabel(
+            "Adds Google Satellite, Google Hybrid and Google Map to the map's layer switcher.\n"
+            "Needs a Google Cloud key with the Map Tiles API enabled. The imagery year\n"
+            "selector stays Esri-only, since Google offers no historical imagery."
+        )
+        google_key_help_label.setWordWrap(True)
+        google_key_help_label.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+        map_layout.addRow(google_key_help_label)
+
         map_group.setLayout(map_layout)
         layout.addWidget(map_group)
         
@@ -284,7 +300,8 @@ class SettingsDialog(QDialog):
             'auto_rotate_images': self.autorotate_checkbox.isChecked(),
             'preserve_map_zoom': self.preserve_zoom_checkbox.isChecked(),
             'default_map_zoom': self.zoom_slider.value(),
-            'confirm_gps_update': self.confirm_gps_checkbox.isChecked()
+            'confirm_gps_update': self.confirm_gps_checkbox.isChecked(),
+            'map_google_api_key': self.google_key_edit.text().strip()
         }
         return {'ai_settings': ai_settings, 'app_settings': app_settings}
     
@@ -316,6 +333,30 @@ class SettingsDialog(QDialog):
             else:
                 return
         
+        # Check a new Google key now, while the user is here to fix it
+        google_key = settings['app_settings']['map_google_api_key']
+        if google_key and google_key != self.app_settings.get('map_google_api_key', ''):
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                google_tiles_service.create_session(google_key, google_tiles_service.LAYER_SATELLITE)
+                error = None
+            except google_tiles_service.GoogleTilesError as e:
+                error = str(e)
+            finally:
+                QApplication.restoreOverrideCursor()
+            if error:
+                reply = QMessageBox.warning(
+                    self,
+                    "Google Maps API Key",
+                    f"The Google Maps API key could not be used:\n\n{error}\n\n"
+                    "Check that the Map Tiles API is enabled and billing is set up "
+                    "for the key's project.\n\nSave the key anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+        
         # Save settings
         Config.set_ai_settings(settings['ai_settings'])
         
@@ -326,6 +367,7 @@ class SettingsDialog(QDialog):
         app_settings['preserve_map_zoom'] = settings['app_settings']['preserve_map_zoom']
         app_settings['default_map_zoom'] = settings['app_settings']['default_map_zoom']
         app_settings['confirm_gps_update'] = settings['app_settings']['confirm_gps_update']
+        app_settings['map_google_api_key'] = google_key
         Config.set_app_settings(app_settings)
         
         super().accept()

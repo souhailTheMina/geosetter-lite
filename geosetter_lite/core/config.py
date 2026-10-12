@@ -21,6 +21,7 @@ class Config:
             'default_map_zoom': 10,
             'map_layer': 'Hybrid',
             'map_imagery_year': 'latest',
+            'map_google_api_key': '',
             'map_overlays': [],
             'map_overlays_hidden': [],
             'map_overlays_bundled': [],
