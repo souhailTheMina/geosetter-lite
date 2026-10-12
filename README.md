@@ -18,6 +18,191 @@ A comprehensive Python application for viewing and editing EXIF/IPTC/XMP metadat
 >
 > This is a light clone, written in Python, focusing on core geotagging features with additional AI-powered functionalities. The triggering reason was the lack of a macOS version of GeoSetter along with the desire to experiment with AI models for photo processing.
 
+## Contents
+
+- [Setup on a Mac](#setup-on-a-mac) - first-time install, step by step
+- [Updating](#updating)
+- [Google Maps layers](#google-maps-layers) - adding the API key
+- [Troubleshooting](#troubleshooting)
+- [Linux and Windows](#linux-and-windows)
+- [Changes from upstream](#changes-from-upstream)
+- [Features](#features) and [User Interface](#user-interface)
+- [Distribution](#distribution) - building the app bundle and wheel
+
+## Setup on a Mac
+
+**What you need**
+
+- A Mac running **macOS 13 (Ventura) or newer**. Both Apple silicon (M1 and later)
+  and Intel Macs are supported. To check, open  → About This Mac.
+- Access to this repository on GitHub. It is private, so ask the owner to add your
+  GitHub account as a collaborator first.
+- About 5 GB of free disk space (Python, PyTorch and the AI models) and an internet
+  connection for the install.
+
+Everything below is typed into the **Terminal** app (Applications → Utilities →
+Terminal). Paste one block at a time and wait for it to finish before the next.
+
+**1. Install Homebrew**, the package manager used for the other tools. Skip this
+step if `brew --version` already prints a version.
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+It asks for your Mac password (nothing appears as you type - that is normal) and
+may install Apple's Command Line Tools, which provide `git`. When it finishes it
+prints a **Next steps** section with one or two `eval ...` lines: copy and run
+those, or `brew` will not be found.
+
+**2. Install the tools the app needs**: ExifTool (reads and writes metadata),
+jpegtran (lossless rotation, from `jpeg-turbo`), uv (installs Python and the
+project's libraries) and gh (signs in to GitHub).
+
+```bash
+brew install exiftool jpeg-turbo uv gh
+```
+
+**3. Sign in to GitHub and download the project.** `gh auth login` asks a few
+questions: choose **GitHub.com**, **HTTPS**, **Yes** to authenticate Git, and
+**Login with a web browser**, then follow the code it shows.
+
+```bash
+gh auth login
+cd ~/Desktop
+gh repo clone souhailTheMina/geosetter-lite
+```
+
+This creates a `geosetter-lite` folder on your Desktop. Any other location works
+too - just use that folder in the later steps.
+
+**4. Install Python and the project's libraries.** uv reads `.python-version` and
+downloads Python 3.12.9 itself, so there is no separate Python install. This takes
+several minutes, mostly for PyTorch. Intel Macs automatically get the older
+PyTorch 2.2.2, the last release built for them.
+
+```bash
+cd ~/Desktop/geosetter-lite
+uv sync
+```
+
+**5. Start the app.**
+
+```bash
+uv run python main.py
+```
+
+A folder picker opens; choose a folder of photos. You can also pass the folder
+directly: `uv run python main.py ~/Pictures/site-visit`.
+
+**6. Optional: build a double-clickable app** so you do not need Terminal to start
+it.
+
+```bash
+make package
+cp -R "dist/GeoSetter Lite.app" /Applications/
+```
+
+- Build it on the Mac that will run it. An app built on an Apple silicon Mac does
+  not run on an Intel Mac, and the other way round, so do not copy the app between
+  machines.
+- The app is unsigned, so macOS blocks it the first time. Try to open it once, then
+  go to System Settings → Privacy & Security, scroll down and click **Open Anyway**.
+  On older macOS versions, right-click the app, choose **Open**, then **Open** again.
+- The app still uses the ExifTool and jpegtran installed in step 2.
+
+**First run**
+
+- The map opens on Riyadh until photos with GPS coordinates are loaded, and the
+  site overlays in `data/overlays/` are loaded automatically.
+- The first time **Find Similar Photos** or **Predict Locations** is used, the AI
+  models (about 1.2 GB) are downloaded. After that they work offline.
+- Settings are in the app menu at the left of the menu bar (**Settings...**, or
+  <kbd>⌘</kbd> <kbd>,</kbd>). Your settings are stored in `~/.geosetter_lite/`, not
+  in the project folder, so updating never resets them.
+
+## Updating
+
+When new changes have been pushed, run this in the project folder:
+
+```bash
+cd ~/Desktop/geosetter-lite
+git pull
+uv sync
+```
+
+Then restart the app. If you use the app bundle, run `make package` again and
+copy the new app over the old one in Applications.
+
+## Google Maps layers
+
+With a Google Maps API key, three more views appear in the map's layer switcher:
+**Google Satellite**, **Google Hybrid** and **Google Map**. Without a key the app
+works as before with the Esri and OpenStreetMap views.
+
+**Adding the key (everyone)**
+
+1. Get the key from the person who manages the team's Google Cloud project, over a
+   private channel (a direct message, not a group chat).
+2. Open **Settings** → **Map** → **Google Maps API Key**, paste the key and click
+   **OK**. The key is checked straight away; if Google refuses it, the message says
+   why.
+3. Pick a Google view from the layer switcher at the top right of the map. On later
+   starts the Google views take a moment to appear while the app connects.
+
+The key is stored only in `~/.geosetter_lite/config.yaml` on your own Mac. **Never
+put it in the repository** - anyone with access to the repo could use it, and the
+usage is billed to the card on the Google Cloud account.
+
+**Creating and protecting the key (admin, once)**
+
+1. In the [Google Cloud console](https://console.cloud.google.com), with billing set
+   up, open **APIs & Services → Library**, search for **Map Tiles API** and click
+   **Enable**.
+2. **APIs & Services → Credentials → Create credentials → API key** creates the key.
+3. Click the key, choose **Restrict key** under **API restrictions** and tick only
+   **Map Tiles API**. Leave **Application restrictions** at **None** (or, if the
+   office has a fixed IP address, **IP addresses** with that address - the key then
+   only works from the office network).
+4. Under **APIs & Services → Map Tiles API → Quotas & System Limits**, lower the
+   daily request limits. This is the real spending limit: once it is reached Google
+   refuses requests instead of billing them. Raise it if people run out.
+5. A budget under **Billing → Budgets & alerts** emails you when spending passes a
+   set amount. It only warns; the quota is what stops spending.
+6. If the key ever leaks, **Credentials →** the key **→ Regenerate key** disables
+   the old one immediately. Send everyone the new key.
+
+**What the Google views do not have:** historical imagery. Google does not offer
+its older imagery to apps, so the imagery **Year** selector only applies to the
+Esri **Satellite** and **Hybrid** views and is greyed out on the Google ones.
+
+## Troubleshooting
+
+| Problem | What to do |
+| --- | --- |
+| `brew: command not found` | Run the `eval ...` lines Homebrew printed at the end of its install, or close and reopen Terminal. |
+| `gh repo clone` says the repository is not found | Your GitHub account has not been added to the private repo yet, or you signed in with a different account (`gh auth status` shows which). |
+| `uv sync` fails mentioning `torch` on an Intel Mac | Run `git pull` first - Intel support was added in a later version. |
+| The app will not open ("cannot be opened" / "unidentified developer") | Privacy & Security → **Open Anyway**, as described in step 6. |
+| "ExifTool is not installed" at start, or **Rotate Photos** fails | Install them with `brew install exiftool jpeg-turbo`, then restart the app. |
+| No Google views in the layer switcher | Check the key in Settings → Map. Saving it again shows Google's error if it is refused (Map Tiles API not enabled, no billing, quota reached, restricted to another IP). |
+| The **Year** selector is greyed out | It only works on the Esri **Satellite** and **Hybrid** views. |
+| The first AI run is slow | It is downloading the models (about 1.2 GB) once. |
+
+## Linux and Windows
+
+The app is developed and tested on macOS, but runs wherever PySide6 and PyTorch
+do. Install [uv](https://docs.astral.sh/uv/), ExifTool and jpegtran, then run
+`uv sync` and `uv run python main.py` in the project folder.
+
+- **Linux (Debian/Ubuntu):** `sudo apt-get install libimage-exiftool-perl libjpeg-turbo-progs`
+- **Windows:** ExifTool from <https://exiftool.org> and jpegtran from
+  <https://github.com/libjpeg-turbo/libjpeg-turbo/releases>; both must be on the
+  `PATH`.
+
+Using pip instead of uv also works: `pip install -e .` in a Python 3.12.9+
+environment.
+
 ## Changes from upstream
 
 Everything below was added or changed in this fork, relative to
@@ -34,9 +219,31 @@ and canvas-rendered to stay responsive on large datasets. See
 layer switcher offering Esri World Imagery satellite, hybrid (imagery plus labels,
 the new default) and OSM street views, remembered between sessions.
 
+**Historical imagery** - new `geosetter_lite/services/imagery_service.py`. A
+**Year** selector in the layer switcher shows the Satellite and Hybrid views as
+they looked in an earlier year, using Esri's World Imagery Wayback archive (one
+entry per year back to 2014). The release list is cached for a week.
+
+**Google Maps layers** - new `geosetter_lite/services/google_tiles_service.py`.
+With a Google Maps API key in Settings, Google Satellite, Google Hybrid and Google
+Map views are added through Google's Map Tiles API. Tile sessions are cached on
+disk, and the attribution and maximum zoom follow the area in view as Google's
+terms require. See [Google Maps layers](#google-maps-layers).
+
+**Smaller markers and deeper zoom** - photo and active markers are 20% smaller so
+they hide less of the imagery around them, and every view zooms to level 22,
+enlarging the most detailed tiles each source provides (level 19 for Esri and
+OpenStreetMap, about 21 for Google).
+
 **Configurable start location** - the map opens at `DEFAULT_CENTER_LAT` /
 `DEFAULT_CENTER_LON` / `DEFAULT_CENTER_ZOOM` in `geosetter_lite/ui/map_widget.py`
 (Riyadh, Saudi Arabia) until geotagged photos are loaded.
+
+**Bundled overlays** - KMZ/KML files in `data/overlays/` are loaded automatically
+on first run, so a fresh install already shows the team's site maps.
+
+**Remove GPS Coordinates** - a new image list context menu entry deletes all GPS
+data from the selected photos after a confirmation.
 
 **Parcel folders** - opening a folder named for a parcel in a loaded overlay moves
 the map to that parcel. See [Parcel Folders](#parcel-folders).
@@ -54,12 +261,22 @@ thumbnail, a few hundred photos pushed the document past the 2 MB `setHtml()` li
 at which point Qt silently discarded the entire page and the map failed to render.
 Thumbnails are also cached by path, mtime and size.
 
+**Faster folder loading** - metadata is read with one ExifTool run per 200 files
+instead of one per file, the image viewer shows a reduced preview, and map popup
+thumbnails are generated when a popup is first opened.
+
+**Intel Mac support** - Intel Macs get PyTorch 2.2.2 (the last release built for
+them) with matching NumPy and transformers versions; other platforms keep the
+current ones. jpegtran is also found in the Homebrew locations, so rotation works
+in the app bundle when it is started from Finder.
+
 ## Features
 
 ### Core Features
 - **Image List View**: Display all JPEG, PNG, and HEIF/HEIC images from a directory with comprehensive metadata columns
 - **Image Viewer**: View selected images in a resizable panel with thumbnail support
-- **Interactive Map**: Display all images with GPS coordinates on a satellite, hybrid or street map with visual distinction for selected images
+- **Interactive Map**: Display all images with GPS coordinates on a satellite, hybrid or street map (optionally Google's too), with visual distinction for selected images
+- **Historical Imagery**: Show the satellite and hybrid views as they looked in an earlier year
 - **Map Overlays**: Load KMZ/KML files to draw reference geometry (polygons, lines and points) beneath your photo markers
 - **Active Marker**: Click anywhere on the map to set an active marker for batch GPS updates
 - **GPS Coordinate Management**: Update multiple images with GPS coordinates from the active marker, applied immediately without a confirmation prompt
@@ -118,95 +335,6 @@ Thumbnails are also cached by path, mtime and size.
 ![Geolocation Prediction](_img/GeoSetterLite-GeolocPredict.png)
 *Predict GPS coordinates for photos without location data*
 
-## Requirements
-
-- Python 3.12.9 or higher
-- ExifTool installed on your system
-- jpegtran installed on your system
-
-### Installing ExifTool & jpegtran
-
-**macOS:**
-```bash
-brew install exiftool jpeg-turbo
-```
-
-**Linux (Debian/Ubuntu):**
-```bash
-sudo apt-get install libimage-exiftool-perl
-```
-
-See <https://libjpeg-turbo.org/Downloads/YUM> for jpegtran
-
-**Windows:**
-Download from [https://exiftool.org](https://exiftool.org) and <https://github.com/libjpeg-turbo/libjpeg-turbo/releases>
-
-## Installation
-
-1. Install dependencies using uv (recommended) or pip:
-
-```bash
-# Using uv
-uv sync
-
-# Or using pip
-pip install -e .
-```
-
-### macOS Setup (step by step)
-
-Starting from a fresh Mac, after cloning the repository:
-
-1. Install [Homebrew](https://brew.sh) if it is not already installed, then run the
-   `eval ...` lines it prints at the end so `brew` is on your `PATH`:
-
-   ```bash
-   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   ```
-
-2. Install ExifTool, jpegtran (from `jpeg-turbo`) and uv:
-
-   ```bash
-   brew install exiftool jpeg-turbo uv
-   ```
-
-3. Install Python and the project dependencies. uv reads `.python-version` and
-   downloads Python 3.12.9 itself, so no separate Python install is needed. This
-   step takes a while because the AI features pull in PyTorch.
-
-   ```bash
-   cd geosetter-lite
-   uv sync
-   ```
-
-4. Run the application:
-
-   ```bash
-   uv run python main.py
-   ```
-
-5. Optionally, build a double-clickable app and copy it to Applications:
-
-   ```bash
-   make package
-   cp -R "dist/GeoSetter Lite.app" /Applications/
-   ```
-
-   The app is unsigned, so macOS may block it the first time it is opened. If
-   that happens, right-click the app, choose **Open**, then **Open** again.
-
-Notes:
-
-- The first time Photo Similarity or Geolocation Prediction is used, the AI models
-  are downloaded, so an internet connection is needed then.
-- To update later, run `git pull && uv sync`. If you use the app bundle, also run
-  `make package` again and copy the new app over the old one.
-- Both Apple silicon and Intel Macs are supported (Intel Macs get PyTorch 2.2.2,
-  the last release built for them). An app bundle only runs on the kind of Mac it
-  was built on, so build it with `make package` on the Mac that will use it rather
-  than copying it from another one.
-- PySide6 needs macOS 13 (Ventura) or newer.
-
 ## Usage
 
 ### Launch with File Dialog
@@ -260,11 +388,17 @@ The application features a flexible 3-pane layout with resizable borders:
     4. **Set Taken Date** (file → calendar): Initialize Taken Date from file creation date
     5. **Set GPS Date** (calendar → GPS): Initialize GPS Date from Taken Date (converted to UTC)
     6. **Repair Metadata** (medical cross): Fix/repair metadata using ExifTool
-  - Leaflet-based map with a layer switcher (top right) offering three views:
+  - Leaflet-based map with a layer switcher (top right) offering these views:
     - **Satellite**: Esri World Imagery aerial photography
     - **Hybrid**: the same imagery with place names and boundaries drawn on top (default)
     - **Street**: OpenStreetMap tiles
-  - The selected view is remembered between sessions
+    - **Google Satellite**, **Google Hybrid**, **Google Map**: only when a Google
+      Maps API key is set (see [Google Maps layers](#google-maps-layers))
+  - **Year** selector in the same switcher: **Latest** or an earlier year for the
+    Esri Satellite and Hybrid views (greyed out on the other views)
+  - The selected view and year are remembered between sessions
+  - Zooms in to level 22; past the deepest level a source provides, its tiles are
+    enlarged rather than left blank
   - Any loaded KMZ/KML overlays appear in the same switcher and can be toggled individually
   - Before any geotagged image is loaded the map opens on Riyadh, Saudi Arabia;
     once images with GPS coordinates are present it fits to them instead
@@ -309,9 +443,13 @@ All three panes can be resized by dragging the borders between them.
   - Displays location names via reverse geocoding
   - Select which predictions to apply
   - Batch GPS coordinate updates
-- **Settings**: Configure AI feature parameters
-  - Similarity threshold slider (0.0-1.0)
-  - Model cache directory selection
+- **Settings** (on macOS it appears in the app menu instead, <kbd>⌘</kbd> <kbd>,</kbd>):
+  - **Photo Similarity**: similarity threshold slider (0.0-1.0)
+  - **Model Storage**: model cache directory
+  - **ExifTool**: create `_original` backup files
+  - **Image Display**: rotate images according to their EXIF orientation
+  - **Map**: keep zoom when selecting photos, default zoom, confirm GPS updates,
+    Google Maps API key
   - Reset to defaults option
 
 **Panes:**
@@ -358,7 +496,10 @@ Keywords are automatically managed:
 
 - **PySide6**: Qt-based GUI framework (includes QtWebEngineWidgets for map display)
 - **Pillow**: Image loading, manipulation, and thumbnail generation
-- **requests**: HTTP library for reverse geocoding API calls
+- **requests**: HTTP library for reverse geocoding and map service calls
+- **PyTorch**, **torchvision**, **transformers**: AI models for photo similarity and
+  geolocation prediction
+- **PyYAML**: settings file
 
 **External Requirements:**
 - **ExifTool**: Must be installed on your system for reading/writing EXIF/IPTC/XMP metadata
@@ -366,6 +507,8 @@ Keywords are automatically managed:
 
 **External APIs:**
 - **Esri World Imagery**: Satellite tiles for the Satellite/Hybrid views (no API key required)
+- **Esri World Imagery Wayback**: archived imagery for the Year selector (no API key required)
+- **Google Map Tiles API**: Google views (optional; needs an API key with billing, see [Google Maps layers](#google-maps-layers))
 - **OpenStreetMap**: Street map tiles (no API key required)
 - **OpenStreetMap Nominatim**: Free reverse geocoding service (no API key required)
 
@@ -528,13 +671,16 @@ This will create the following types of packages in the `dist/` directory:
 
 The wheel includes:
 - All source code from the `geosetter_lite` package
-- Data files from the `data/` directory (world_locations.csv)
+- Data files from the `data/` directory (world_locations.csv, overlays)
 - Entry point script: `geosetter-lite`
 
 The app bundle includes:
 - All Python dependencies (PySide6, PyTorch, etc.)
-- Data files (world_locations.csv)
+- Data files (world_locations.csv, overlays)
 - Self-contained Python runtime
+
+The app bundle is built for the processor of the Mac that builds it (Apple silicon
+or Intel) and only runs on that kind of Mac.
 
 ### Installing from Wheel
 
@@ -555,7 +701,7 @@ Run directly: Double-click `dist/GeoSetter Lite.app`
 - Configure hidden imports
 - Adjust bundle settings
 
-**Note**: The app requires ExifTool to be installed separately on the system (refer to the Requirements section).
+**Note**: The app requires ExifTool and jpegtran to be installed separately on the system (see [Setup on a Mac](#setup-on-a-mac)).
 
 ## License
 
@@ -581,7 +727,8 @@ This project uses the following third-party libraries:
 - **transformers** (Apache 2.0): Hugging Face transformers library
 - **Leaflet** (BSD 2-Clause): JavaScript library for interactive maps (v1.9.4, bundled in `geosetter_lite/resources/leaflet/` and served through Qt resources)
 - **OpenStreetMap** (ODbL): Street map tiles and data
-- **Esri World Imagery**: Satellite tiles, used as a web service under the Esri terms of use (attribution required)
+- **Esri World Imagery** and **World Imagery Wayback**: Satellite tiles, used as a web service under the Esri terms of use (attribution required)
+- **Google Map Tiles API**: Optional map tiles, used as a web service under the Google Maps Platform terms (attribution required, shown on the map)
 - **Nominatim** (GPL v2): Reverse geocoding service (used as web service, not linked)
 
 The use of PySide6 under LGPL v3 is compatible with Apache 2.0 licensing as long as PySide6 remains dynamically linked (installed as a separate package), which is the case in this project.
@@ -590,10 +737,10 @@ The use of PySide6 under LGPL v3 is compatible with Apache 2.0 licensing as long
 
 - **ExifTool** by Phil Harvey - Comprehensive metadata reading/writing tool
 - **OpenStreetMap Contributors** - Street map data and tiles
-- **Esri** - World Imagery satellite tiles
+- **Esri** - World Imagery satellite tiles and the Wayback archive
+- **Google** - Map tiles through the Map Tiles API
 - **Nominatim** - Reverse geocoding service
 - **Leaflet** - Interactive map library
 - **PyTorch** - Deep learning framework
 - **Hugging Face** - Pre-trained models (ResNet, CLIP)
 - **OpenAI** - CLIP model architecture
-# GeoSetterLiteGr
