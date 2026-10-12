@@ -9,9 +9,17 @@ dependencies = [
     "Pillow>=10.0.0",
     "pillow-heif>=0.13.0",
     "requests>=2.31.0",
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "transformers>=4.30.0",
+    # PyTorch dropped Intel Mac builds after 2.2.2, and that release needs
+    # NumPy 1.x. Transformers 4.52+ refuses .bin weights (the only format the
+    # CLIP model is published in) on PyTorch older than 2.6. Every other
+    # platform gets the current versions.
+    "torch>=2.0.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchvision>=0.15.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "transformers>=4.30.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchvision==0.17.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "numpy<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "transformers>=4.30.0,<4.52; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "PyYAML>=6.0"
 ]
 

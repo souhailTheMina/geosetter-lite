@@ -201,6 +201,11 @@ Notes:
   are downloaded, so an internet connection is needed then.
 - To update later, run `git pull && uv sync`. If you use the app bundle, also run
   `make package` again and copy the new app over the old one.
+- Both Apple silicon and Intel Macs are supported (Intel Macs get PyTorch 2.2.2,
+  the last release built for them). An app bundle only runs on the kind of Mac it
+  was built on, so build it with `make package` on the Mac that will use it rather
+  than copying it from another one.
+- PySide6 needs macOS 13 (Ventura) or newer.
 
 ## Usage
 
